@@ -15,6 +15,7 @@ use hyper::{Body, Client, Method, Request, Response, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -251,7 +252,7 @@ impl Stats {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RequestLogEntry {
     pub id: u64,
     pub ts_ms: u64,
@@ -270,10 +271,11 @@ pub struct RequestLogEntry {
     pub total_tokens: Option<u64>,
     pub request_headers: Option<BTreeMap<String, String>>,
     pub request_body: Option<String>,
+    #[serde(default)]
     pub timing: RequestTiming,
 }
 
-#[derive(Clone, Default, serde::Serialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RequestTiming {
     pub queue_ms: u64,
     pub upstream_ms: u64,
@@ -346,7 +348,16 @@ impl RequestsLog {
         if let Some(tx) = &self.tx {
             let _ = tx.try_send(entry.clone());
         }
+        self.push_entry(entry);
+    }
 
+    pub fn load_history<I: IntoIterator<Item = RequestLogEntry>>(&self, entries: I) {
+        for entry in entries {
+            self.push_entry(entry);
+        }
+    }
+
+    fn push_entry(&self, entry: RequestLogEntry) {
         {
             let mut entries = self.entries.lock().unwrap();
             entries.push_back(entry.clone());
@@ -520,8 +531,14 @@ impl RouterState {
         let model_routes_path = data_dir.join("models_routes.json");
         let upstreams_path = data_dir.join("upstreams.json");
         let requests_log_path = data_dir.join("requests.jsonl");
+        let history = load_request_log_history(&requests_log_path, 5000);
         let log_tx = start_request_log_writer(requests_log_path);
         let requests = Arc::new(RequestsLog::new(5000, log_tx));
+        if !history.is_empty() {
+            let count = history.len();
+            requests.load_history(history);
+            tracing::info!(count, "loaded request log history");
+        }
 
         let mut upstream_configs = cfg.upstreams.clone();
         if let Ok(list) = load_upstreams_override(&upstreams_path) {
@@ -1976,6 +1993,46 @@ fn update_bucket(
     while buckets.len() > cap {
         buckets.pop_front();
     }
+}
+
+fn load_request_log_history(path: &Path, limit: usize) -> Vec<RequestLogEntry> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut entries = VecDeque::with_capacity(limit);
+    let mut invalid = 0usize;
+
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            invalid += 1;
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<RequestLogEntry>(line) {
+            Ok(entry) => {
+                entries.push_back(entry);
+                while entries.len() > limit {
+                    entries.pop_front();
+                }
+            }
+            Err(_) => invalid += 1,
+        }
+    }
+
+    if invalid > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            invalid,
+            "skipped invalid request log entries"
+        );
+    }
+
+    entries.into_iter().collect()
 }
 
 fn start_request_log_writer(path: PathBuf) -> Option<mpsc::Sender<RequestLogEntry>> {
