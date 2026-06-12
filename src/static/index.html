@@ -3,340 +3,1359 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>gptload-rs Admin</title>
+  <title>gptload-rs · 控制台</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
   <style>
-    :root { color-scheme: light; --bg:#f7f8fa; --panel:#fff; --text:#111827; --muted:#667085; --border:#d9dde5; --soft:#eef1f6; --accent:#1e6bd6; --ok:#087443; --bad:#b42318; --pre:#0b1020; --pre-text:#d7e3ff; }
-    @media (prefers-color-scheme: dark) {
-      :root { color-scheme: dark; --bg:#111318; --panel:#191c22; --text:#f3f4f6; --muted:#a0a7b4; --border:#303642; --soft:#222732; --accent:#6ea8ff; --ok:#38c172; --bad:#ff6b6b; --pre:#080b12; --pre-text:#d8e2ff; }
+    /* ============================================================
+       Design tokens
+       Single accent + semantic colors. Hairline borders, minimal
+       depth, tabular numerals. Theme via prefers-color-scheme and
+       body.light / body.dark (toggled in app.js).
+       ============================================================ */
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f9;
+      --bg-top: #fbfcfe;
+      --panel: #ffffff;
+      --panel-soft: #f5f7fa;
+      --panel-inset: #fafbfc;
+      --text: #0f172a;
+      --text-strong: #0a1020;
+      --muted: #64707f;
+      --faint: #8b95a3;
+      --border: #e8ebf0;
+      --border-strong: #d7dce3;
+      --accent: #3a5bd0;
+      --accent-strong: #2f49ad;
+      --accent-soft: #eef1fc;
+      --accent-contrast: #ffffff;
+      --ok: #0e9f6e;
+      --ok-soft: #e7f6ef;
+      --warn: #bd770b;
+      --warn-soft: #fbf1dc;
+      --bad: #df2c3e;
+      --bad-soft: #fceaec;
+      --grid: #edf0f4;
+      --sidebar: #0f1623;
+      --sidebar-soft: #1a2434;
+      --sidebar-text: #e8ecf3;
+      --sidebar-muted: #97a3b6;
+      --sidebar-active: rgba(120, 150, 255, 0.16);
+      --code-bg: #0f1827;
+      --code-text: #d6e0ef;
+      --ring: rgba(58, 91, 208, 0.32);
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-md: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
+      --shadow-pop: 0 14px 40px rgba(15, 23, 42, 0.16);
+      --r-xs: 6px;
+      --r-sm: 8px;
+      --r: 10px;
+      --r-lg: 14px;
     }
-    body.dark { color-scheme: dark; --bg:#111318; --panel:#191c22; --text:#f3f4f6; --muted:#a0a7b4; --border:#303642; --soft:#222732; --accent:#6ea8ff; --ok:#38c172; --bad:#ff6b6b; --pre:#080b12; --pre-text:#d8e2ff; }
-    body.light { color-scheme: light; --bg:#f7f8fa; --panel:#fff; --text:#111827; --muted:#667085; --border:#d9dde5; --soft:#eef1f6; --accent:#1e6bd6; --ok:#087443; --bad:#b42318; --pre:#0b1020; --pre-text:#d7e3ff; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; background: var(--bg); color: var(--text); }
-    h1 { margin: 0 0 10px 0; }
-    .row { display: flex; gap: 16px; flex-wrap: wrap; }
-    .card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: var(--panel); }
-    .card h2 { margin: 0 0 8px 0; font-size: 16px; }
-    table { border-collapse: collapse; width: 100%; }
-    th, td { border-bottom: 1px solid var(--soft); padding: 6px 8px; text-align: left; font-size: 13px; }
-    th { background: var(--soft); position: sticky; top: 0; }
-    input, select, textarea, button { font-size: 14px; }
-    input, select, textarea { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; }
-    textarea { width: 100%; min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-    .muted { color: var(--muted); font-size: 12px; }
-    .ok { color: var(--ok); }
-    .bad { color: var(--bad); }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #0a0d14;
+        --bg-top: #0d1119;
+        --panel: #11151e;
+        --panel-soft: #161c27;
+        --panel-inset: #0e131c;
+        --text: #e6eaf1;
+        --text-strong: #f4f7fb;
+        --muted: #96a1b3;
+        --faint: #6a7488;
+        --border: #222a38;
+        --border-strong: #2f3947;
+        --accent: #7f97f6;
+        --accent-strong: #98abf8;
+        --accent-soft: #1a2336;
+        --accent-contrast: #0a0d14;
+        --ok: #35cb8b;
+        --ok-soft: #11271e;
+        --warn: #e0a526;
+        --warn-soft: #2c2410;
+        --bad: #ff6b78;
+        --bad-soft: #2c1619;
+        --grid: #1c2330;
+        --sidebar: #070a10;
+        --sidebar-soft: #141b27;
+        --sidebar-text: #e8ecf3;
+        --sidebar-muted: #828ea2;
+        --sidebar-active: rgba(127, 151, 246, 0.18);
+        --code-bg: #0a0e16;
+        --code-text: #cdd7e6;
+        --ring: rgba(127, 151, 246, 0.36);
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+        --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 18px rgba(0, 0, 0, 0.32);
+        --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.55);
+      }
+    }
+
+    body.light {
+      color-scheme: light;
+      --bg: #f4f6f9;
+      --bg-top: #fbfcfe;
+      --panel: #ffffff;
+      --panel-soft: #f5f7fa;
+      --panel-inset: #fafbfc;
+      --text: #0f172a;
+      --text-strong: #0a1020;
+      --muted: #64707f;
+      --faint: #8b95a3;
+      --border: #e8ebf0;
+      --border-strong: #d7dce3;
+      --accent: #3a5bd0;
+      --accent-strong: #2f49ad;
+      --accent-soft: #eef1fc;
+      --accent-contrast: #ffffff;
+      --ok: #0e9f6e;
+      --ok-soft: #e7f6ef;
+      --warn: #bd770b;
+      --warn-soft: #fbf1dc;
+      --bad: #df2c3e;
+      --bad-soft: #fceaec;
+      --grid: #edf0f4;
+      --sidebar: #0f1623;
+      --sidebar-soft: #1a2434;
+      --sidebar-text: #e8ecf3;
+      --sidebar-muted: #97a3b6;
+      --sidebar-active: rgba(120, 150, 255, 0.16);
+      --code-bg: #0f1827;
+      --code-text: #d6e0ef;
+      --ring: rgba(58, 91, 208, 0.32);
+      --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+      --shadow-md: 0 1px 2px rgba(15, 23, 42, 0.04), 0 4px 12px rgba(15, 23, 42, 0.04);
+      --shadow-pop: 0 14px 40px rgba(15, 23, 42, 0.16);
+    }
+
+    body.dark {
+      color-scheme: dark;
+      --bg: #0a0d14;
+      --bg-top: #0d1119;
+      --panel: #11151e;
+      --panel-soft: #161c27;
+      --panel-inset: #0e131c;
+      --text: #e6eaf1;
+      --text-strong: #f4f7fb;
+      --muted: #96a1b3;
+      --faint: #6a7488;
+      --border: #222a38;
+      --border-strong: #2f3947;
+      --accent: #7f97f6;
+      --accent-strong: #98abf8;
+      --accent-soft: #1a2336;
+      --accent-contrast: #0a0d14;
+      --ok: #35cb8b;
+      --ok-soft: #11271e;
+      --warn: #e0a526;
+      --warn-soft: #2c2410;
+      --bad: #ff6b78;
+      --bad-soft: #2c1619;
+      --grid: #1c2330;
+      --sidebar: #070a10;
+      --sidebar-soft: #141b27;
+      --sidebar-text: #e8ecf3;
+      --sidebar-muted: #828ea2;
+      --sidebar-active: rgba(127, 151, 246, 0.18);
+      --code-bg: #0a0e16;
+      --code-text: #cdd7e6;
+      --ring: rgba(127, 151, 246, 0.36);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.35), 0 6px 18px rgba(0, 0, 0, 0.32);
+      --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.55);
+    }
+
+    /* ============================================================
+       Base
+       ============================================================ */
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow-x: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      font-variant-numeric: tabular-nums;
+    }
+
+    ::selection { background: var(--accent-soft); color: var(--text-strong); }
+
+    a { color: var(--accent); text-decoration: none; }
+
+    /* Refined scrollbars */
+    * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: content-box; }
+    ::-webkit-scrollbar-track { background: transparent; }
+
+    svg { display: block; }
+
+    /* ============================================================
+       Layout
+       ============================================================ */
+    .app-frame {
+      display: grid;
+      grid-template-columns: 244px minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      padding: 20px 14px 16px;
+      background: var(--sidebar);
+      color: var(--sidebar-text);
+      border-right: 1px solid rgba(255, 255, 255, 0.05);
+      z-index: 10;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 2px 8px 18px;
+      margin-bottom: 6px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    }
+
+    .brand-mark {
+      flex: 0 0 auto;
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      color: #fff;
+      background: var(--accent);
+      box-shadow: 0 2px 8px rgba(58, 91, 208, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      color: #fff;
+    }
+
+    .brand small {
+      display: block;
+      margin-top: 2px;
+      color: var(--sidebar-muted);
+      font-size: 11.5px;
+      letter-spacing: 0.02em;
+    }
+
+    .nav {
+      display: grid;
+      gap: 2px;
+      margin-top: 8px;
+    }
+
+    .nav-label {
+      padding: 6px 10px 4px;
+      color: var(--sidebar-muted);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .nav a {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      min-height: 36px;
+      padding: 7px 10px;
+      color: var(--sidebar-muted);
+      border-radius: var(--r-sm);
+      font-weight: 500;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+
+    .nav a svg { width: 17px; height: 17px; flex: 0 0 auto; opacity: 0.85; }
+
+    .nav a:hover {
+      color: var(--sidebar-text);
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .nav a.active {
+      color: #fff;
+      background: var(--sidebar-active);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+
+    .nav a.active svg { opacity: 1; color: var(--accent-strong); }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding: 11px 12px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--r);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--sidebar-muted);
+      font-size: 11.5px;
+      line-height: 1.7;
+    }
+
+    .sidebar-footer .ep { display: flex; align-items: center; gap: 7px; }
+    .sidebar-footer .ep svg { width: 13px; height: 13px; opacity: 0.7; }
+
+    .main { min-width: 0; padding: 22px 26px 40px; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      margin: -22px -26px 22px;
+      padding: 15px 26px;
+      border-bottom: 1px solid var(--border);
+      background: color-mix(in srgb, var(--bg) 80%, transparent);
+      backdrop-filter: saturate(1.4) blur(12px);
+      -webkit-backdrop-filter: saturate(1.4) blur(12px);
+    }
+
+    .page-title { min-width: 0; }
+
+    .page-title h2 {
+      margin: 0;
+      font-size: 19px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      color: var(--text-strong);
+    }
+
+    .page-title span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12.5px;
+    }
+
+    .topbar-actions { display: flex; align-items: center; gap: 10px; }
+
+    .live-dot {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 11px 5px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 500;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .live-dot::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--faint);
+      transition: background 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .live-dot.on { color: var(--text); }
+    .live-dot.on::before {
+      background: var(--ok);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .live-dot.bad::before { background: var(--bad); box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 22%, transparent); }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+      50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 5%, transparent); }
+    }
+
+    /* ============================================================
+       Sections & grid
+       ============================================================ */
+    .section { scroll-margin-top: 78px; margin-top: 26px; }
+    .section:first-of-type { margin-top: 0; }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 2px 13px;
+      color: var(--text-strong);
+    }
+    .section-head svg { width: 16px; height: 16px; color: var(--accent); }
+    .section-head h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: 0.02em; }
+    .section-head .rule { flex: 1; height: 1px; background: var(--border); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+      align-items: start;
+    }
+
+    .span-4 { grid-column: span 4; }
+    .span-5 { grid-column: span 5; }
+    .span-6 { grid-column: span 6; }
+    .span-7 { grid-column: span 7; }
+    .span-8 { grid-column: span 8; }
+    .span-12 { grid-column: 1 / -1; }
+
+    /* ============================================================
+       Panels
+       ============================================================ */
+    .panel {
+      position: relative;
+      min-width: 0;
+      padding: 17px 18px;
+      border: 1px solid var(--border);
+      border-radius: var(--r-lg);
+      background: var(--panel);
+      box-shadow: var(--shadow-md);
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+
+    .panel-header h2 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 640;
+      letter-spacing: -0.01em;
+      color: var(--text-strong);
+    }
+
+    .status, .muted { color: var(--muted); font-size: 12px; }
+    .status { font-variant-numeric: tabular-nums; }
+
+    .stack { display: grid; gap: 12px; min-width: 0; }
+
+    /* ============================================================
+       KPI cards
+       ============================================================ */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+      gap: 12px;
+    }
+
+    .kpi {
+      position: relative;
+      padding: 14px 15px;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      background: var(--panel);
+      box-shadow: var(--shadow-sm);
+      overflow: hidden;
+    }
+
+    .kpi-top {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      margin-bottom: 9px;
+    }
+    .kpi-top svg { width: 15px; height: 15px; color: var(--faint); }
+    .kpi-label { font-size: 11.5px; font-weight: 550; letter-spacing: 0.01em; }
+
+    .kpi-value {
+      font-size: 25px;
+      font-weight: 660;
+      letter-spacing: -0.02em;
+      line-height: 1.05;
+      color: var(--text-strong);
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi-value .unit { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 2px; letter-spacing: 0; }
+
+    .kpi-sub { margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+    .kpi-sub b { font-weight: 600; color: var(--text); }
+    .kpi.accent { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--accent); }
+    .kpi.ok-edge { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--ok); }
+    .kpi.bad-edge { box-shadow: var(--shadow-sm), inset 3px 0 0 var(--bad); }
+
+    .kpi-bar {
+      margin-top: 10px;
+      height: 5px;
+      border-radius: 999px;
+      background: var(--panel-soft);
+      overflow: hidden;
+    }
+    .kpi-bar > span { display: block; height: 100%; border-radius: 999px; background: var(--ok); transition: width 0.5s ease; }
+
+    /* status-code distribution bar */
+    .dist {
+      display: flex;
+      height: 26px;
+      border-radius: var(--r-sm);
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+    }
+    .dist > span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: #fff;
+      white-space: nowrap;
+      transition: flex-grow 0.5s ease;
+    }
+    .dist .d2 { background: var(--ok); }
+    .dist .d3 { background: var(--accent); }
+    .dist .d4 { background: var(--warn); }
+    .dist .d5 { background: var(--bad); }
+    .dist-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 9px; font-size: 11.5px; color: var(--muted); }
+    .dist-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+
+    .kpi-empty { grid-column: 1 / -1; padding: 22px; text-align: center; color: var(--muted); font-size: 12.5px; border: 1px dashed var(--border-strong); border-radius: var(--r); }
+
+    .skeleton { position: relative; color: transparent !important; background: var(--panel-soft); border-radius: 6px; overflow: hidden; }
+    .skeleton::after {
+      content: ""; position: absolute; inset: 0;
+      background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--border) 60%, transparent), transparent);
+      transform: translateX(-100%); animation: shimmer 1.3s infinite;
+    }
+    @keyframes shimmer { 100% { transform: translateX(100%); } }
+
+    /* ============================================================
+       Forms
+       ============================================================ */
+    .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+
+    .route-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+
+    .field { display: grid; gap: 6px; min-width: 0; }
+
+    label, .label {
+      color: var(--muted);
+      font-size: 11.5px;
+      font-weight: 550;
+      letter-spacing: 0.01em;
+    }
+
+    input, select, textarea, button { min-width: 0; font: inherit; }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 9px 11px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.14s ease, box-shadow 0.14s ease;
+    }
+
+    input::placeholder, textarea::placeholder { color: var(--faint); }
+
+    input:hover, select:hover, textarea:hover { border-color: var(--muted); }
+
+    input:focus, select:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--ring);
+    }
+
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364707f' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 30px;
+    }
+
+    input[type="radio"], input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
+    input[type="range"] { padding: 0; accent-color: var(--accent); box-shadow: none; border: 0; background: transparent; }
+    input[type="search"] { -webkit-appearance: none; }
+
+    textarea {
+      min-height: 176px;
+      resize: vertical;
+      font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    /* ============================================================
+       Buttons
+       ============================================================ */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 8px 13px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      background: var(--panel);
+      color: var(--text);
+      font-weight: 540;
+      box-shadow: var(--shadow-sm);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.13s ease, border-color 0.13s ease, color 0.13s ease, box-shadow 0.13s ease;
+    }
+
+    .btn svg { width: 15px; height: 15px; }
+    .btn:hover { background: var(--panel-soft); border-color: var(--muted); }
+    .btn:active { transform: translateY(0.5px); }
+    .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
+
+    .btn.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: var(--accent-contrast);
+      box-shadow: 0 1px 2px rgba(58, 91, 208, 0.28);
+    }
+    .btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+
+    .btn.danger { border-color: color-mix(in srgb, var(--bad) 38%, var(--border-strong)); color: var(--bad); background: var(--panel); }
+    .btn.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+
+    .button-row, .control-row, .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+    .control-row { margin-bottom: 13px; }
+    .control-row select { width: auto; max-width: 240px; }
+
+    .token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
+    .billing-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+
+    .segmented { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-soft); }
+    .segmented label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 11px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12.5px;
+      font-weight: 540;
+      cursor: pointer;
+      transition: background 0.13s ease, color 0.13s ease;
+    }
+    .segmented label:hover { color: var(--text); }
+    .segmented label:has(input:checked) { background: var(--panel); color: var(--text-strong); box-shadow: var(--shadow-sm); }
+    .segmented input { position: absolute; opacity: 0; pointer-events: none; }
+
+    .segmented-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 36px;
+      padding: 7px 11px;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--r-sm);
+      color: var(--text);
+      background: var(--panel);
+      font-size: 12.5px;
+      cursor: pointer;
+    }
+
+    /* ============================================================
+       Text utilities
+       ============================================================ */
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-variant-numeric: tabular-nums; }
     .small { font-size: 12px; }
-    pre { background: var(--pre); color: var(--pre-text); padding: 10px; border-radius: 8px; overflow: auto; }
-    .btn { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); cursor: pointer; }
-    .btn:hover { background: var(--soft); }
+    .ok { color: var(--ok); font-weight: 600; }
+    .bad { color: var(--bad); font-weight: 600; }
+    .warn { color: var(--warn); font-weight: 600; }
+
+    /* status pills */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 9px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 600;
+      line-height: 1.5;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.9; }
+    .pill.ok { color: var(--ok); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 22%, transparent); }
+    .pill.bad { color: var(--bad); background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 22%, transparent); }
+    .pill.warn { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 24%, transparent); }
+    .pill.muted { color: var(--muted); background: var(--panel-soft); border-color: var(--border); }
+    .pill.muted::before { opacity: 0.5; }
+
+    /* ============================================================
+       Code blocks
+       ============================================================ */
+    pre {
+      margin: 0;
+      max-width: 100%;
+      overflow: auto;
+      padding: 13px 14px;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      background: var(--code-bg);
+      color: var(--code-text);
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      tab-size: 2;
+    }
+    pre:empty { display: none; }
+
+    .pre-box { margin-top: 12px; max-height: 260px; }
+    .pre-tall { max-height: 440px; }
+
+    details.raw { margin-top: 14px; }
+    details.raw > summary {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 550;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    details.raw > summary::-webkit-details-marker { display: none; }
+    details.raw > summary::before {
+      content: "";
+      width: 0; height: 0;
+      border-left: 4px solid currentColor;
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transition: transform 0.15s ease;
+    }
+    details.raw[open] > summary::before { transform: rotate(90deg); }
+    details.raw[open] > summary { margin-bottom: 9px; }
+    details.raw pre { max-height: 320px; }
+
+    /* ============================================================
+       Tables
+       ============================================================ */
+    .table-wrap {
+      width: 100%;
+      max-width: 100%;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      background: var(--panel);
+    }
+
+    table { width: 100%; min-width: 760px; border-collapse: collapse; }
+    .wide-table { min-width: 1120px; }
+    .key-table { min-width: 880px; }
+
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: middle;
+      font-size: 12.5px;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      box-shadow: inset 0 -1px 0 var(--border);
+    }
+
+    td { max-width: 340px; color: var(--text); }
+    tbody tr { transition: background 0.1s ease; }
+    tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel-soft) 45%, transparent); }
+    tr:last-child td { border-bottom: 0; }
     tr.clickable { cursor: pointer; }
-    tr.clickable:hover { background: var(--soft); }
+    tbody tr:hover { background: color-mix(in srgb, var(--accent-soft) 55%, transparent); }
+
+    .cell-truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cell-url { max-width: 380px; }
+    .cell-actions { display: flex; flex-wrap: nowrap; gap: 6px; align-items: center; }
+    .cell-actions .btn { min-height: 28px; padding: 4px 9px; border-radius: 6px; font-size: 12px; box-shadow: none; }
+
+    .slider-cell {
+      display: grid;
+      grid-template-columns: minmax(90px, 1fr) 34px;
+      gap: 9px;
+      align-items: center;
+      min-width: 150px;
+    }
+    .slider-cell .mono { text-align: right; color: var(--muted); }
+
+    /* ============================================================
+       Charts, model list
+       ============================================================ */
+    .chart-canvas { display: block; width: 100%; height: 190px; max-width: 100%; }
+    .chart-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 11.5px; color: var(--muted); }
+    .chart-legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; margin-right: 6px; vertical-align: 3px; }
+
+    .model-list {
+      min-height: 168px;
+      max-height: 280px;
+      overflow: auto;
+      padding: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      background: var(--panel-inset);
+    }
+    .model-list label {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 8px;
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 12.5px;
+      font-weight: 450;
+      cursor: pointer;
+      transition: background 0.1s ease;
+    }
+    .model-list label:hover { background: var(--panel-soft); }
+
+    /* ============================================================
+       Responsive
+       ============================================================ */
+    @media (max-width: 1180px) {
+      .app-frame { grid-template-columns: 1fr; }
+      .sidebar { position: relative; height: auto; flex-direction: row; align-items: center; flex-wrap: wrap; gap: 8px 16px; padding: 12px 16px; }
+      .brand { padding: 0; margin: 0; border: 0; }
+      .nav { grid-auto-flow: column; grid-auto-columns: max-content; gap: 4px; margin: 0; overflow-x: auto; }
+      .nav-label { display: none; }
+      .nav a { min-height: 34px; }
+      .nav a.active { box-shadow: inset 0 -2px 0 var(--accent); }
+      .sidebar-footer { display: none; }
+      .span-4, .span-5, .span-6, .span-7, .span-8 { grid-column: span 6; }
+      .route-layout { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 760px) {
+      .main { padding: 14px; }
+      .topbar { grid-template-columns: 1fr; margin: -14px -14px 16px; padding: 13px 14px; }
+      .topbar-actions { justify-content: space-between; }
+      .grid { grid-template-columns: 1fr; gap: 13px; }
+      .span-4, .span-5, .span-6, .span-7, .span-8, .span-12 { grid-column: 1 / -1; }
+      .panel { padding: 14px; }
+      .panel-header { display: grid; gap: 5px; align-items: start; }
+      .form-grid, .billing-actions, .token-row { grid-template-columns: 1fr; }
+      .button-row > *, .control-row > * { flex: 1 1 auto; }
+      .btn { width: 100%; }
+      .control-row select { width: 100%; max-width: none; }
+      table { min-width: 700px; }
+      .wide-table { min-width: 1020px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+    }
   </style>
 </head>
 <body>
-  <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-    <div>
-      <h1>gptload-rs Admin</h1>
-      <div class="muted">路径：<span class="mono">/admin</span> ｜ API：<span class="mono">/admin/api/v1</span></div>
-    </div>
-    <button class="btn" id="themeToggle">主题</button>
+  <div class="app-frame">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="5" cy="12" r="2.2"/><circle cx="19" cy="5.5" r="2.2"/><circle cx="19" cy="18.5" r="2.2"/>
+            <path d="M7 11 16.8 6.4M7 13l9.8 4.6"/>
+          </svg>
+        </div>
+        <div>
+          <h1>gptload-rs</h1>
+          <small>Admin Console</small>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Admin sections">
+        <div class="nav-label">导航</div>
+        <a href="#overview" data-section="overview">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+          概览
+        </a>
+        <a href="#requests" data-section="requests">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5 7 4-15 2.5 8H21"/></svg>
+          请求
+        </a>
+        <a href="#upstreams" data-section="upstreams">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+          上游
+        </a>
+        <a href="#keys" data-section="keys">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="3.5"/><path d="M10 13 20 3M16 4l3 3M14 6l2.5 2.5"/></svg>
+          Keys
+        </a>
+        <a href="#routes" data-section="routes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V14a4 4 0 0 0 4 4h5.5"/></svg>
+          路由
+        </a>
+        <a href="#config" data-section="config">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg>
+          配置
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="ep mono">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18"/></svg>
+          /admin
+        </div>
+        <div class="ep mono">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 7 4 12l5 5M15 7l5 5-5 5"/></svg>
+          /admin/api/v1
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="page-title">
+          <h2>控制台</h2>
+          <span>上游、密钥、路由与请求状态总览</span>
+        </div>
+        <div class="topbar-actions">
+          <span id="connState" class="live-dot">未连接</span>
+          <button class="btn" id="themeToggle" aria-label="切换主题">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.6 6.6 0 0 0 21 12.8Z"/></svg>
+            <span id="themeToggleLabel">主题</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- Overview -->
+      <section class="section" id="overview">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 12 16 7"/><path d="M21 7.5A9 9 0 0 0 16.5 3"/></svg>
+          <h3>实时概览</h3>
+          <span class="rule"></span>
+        </div>
+
+        <div id="statsGrid" class="kpi-grid" style="margin-bottom:16px"></div>
+
+        <div class="grid">
+          <div class="panel span-4">
+            <div class="panel-header">
+              <h2>登录</h2>
+              <span id="authStatus" class="status"></span>
+            </div>
+            <div class="field">
+              <label for="token">Admin Token</label>
+              <div class="token-row">
+                <input id="token" type="password" placeholder="输入 admin token" autocomplete="off" />
+                <button class="btn primary" id="saveToken">保存</button>
+                <button class="btn" id="clearToken">清除</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel span-8">
+            <div class="panel-header">
+              <h2>响应分布</h2>
+              <span id="distInfo" class="status"></span>
+            </div>
+            <div id="statsDist"></div>
+            <details class="raw">
+              <summary>原始快照 JSON</summary>
+              <pre id="stats" class="small"></pre>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- Requests -->
+      <section class="section" id="requests">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5 7 4-15 2.5 8H21"/></svg>
+          <h3>请求</h3>
+          <span class="rule"></span>
+        </div>
+        <div class="grid">
+          <div class="panel span-5">
+            <div class="panel-header">
+              <h2>请求统计</h2>
+              <span id="requestsChartInfo" class="status"></span>
+            </div>
+            <div class="control-row">
+              <select id="requestsWindow" aria-label="请求统计窗口">
+                <option value="minute">最近 60 分钟</option>
+                <option value="hour">最近 48 小时</option>
+                <option value="day">最近 30 天</option>
+              </select>
+              <button class="btn" id="refreshRequestsChart">刷新</button>
+            </div>
+            <canvas id="requestsChart" class="chart-canvas"></canvas>
+            <div class="chart-legend">
+              <span><i style="background:var(--accent)"></i>总数</span>
+              <span><i style="background:var(--ok)"></i>成功</span>
+              <span><i style="background:var(--bad)"></i>失败</span>
+            </div>
+          </div>
+
+          <div class="panel span-7">
+            <div class="panel-header">
+              <h2>最近请求</h2>
+              <span id="requestsInfo" class="status"></span>
+            </div>
+            <div class="control-row">
+              <button class="btn" id="refreshRequests">刷新</button>
+              <button class="btn" id="toggleRequestsStream">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5v14l11-7z"/></svg>
+                实时流
+              </button>
+            </div>
+            <div class="table-wrap">
+              <table id="requestsTable">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>IP</th>
+                    <th>模型</th>
+                    <th>状态</th>
+                    <th>耗时</th>
+                    <th>Tokens</th>
+                    <th>Bytes</th>
+                    <th>Upstream</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <pre id="requestDetail" class="pre-box small"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Upstreams -->
+      <section class="section" id="upstreams">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
+          <h3>上游</h3>
+          <span class="rule"></span>
+        </div>
+        <div class="grid">
+          <div class="panel span-8">
+            <div class="panel-header">
+              <h2>Upstreams</h2>
+              <span id="upstreamsInfo" class="status"></span>
+            </div>
+            <div class="control-row">
+              <button class="btn" id="refreshUpstreams">刷新</button>
+            </div>
+            <div class="table-wrap">
+              <table id="upstreamsTable" class="wide-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Base URL</th>
+                    <th>Format</th>
+                    <th>Proxy</th>
+                    <th>Weight</th>
+                    <th>Keys</th>
+                    <th>Selected</th>
+                    <th>2xx</th>
+                    <th>4xx</th>
+                    <th>5xx</th>
+                    <th>NetErr</th>
+                    <th>Timeout</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel span-4">
+            <div class="panel-header">
+              <h2>Upstream 管理</h2>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label for="upstreamManageSelect">已有 upstream</label>
+                <select id="upstreamManageSelect"></select>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="upstreamId">ID</label>
+                  <input id="upstreamId" type="text" placeholder="openai" />
+                </div>
+                <div class="field">
+                  <label for="upstreamWeight">Weight</label>
+                  <input id="upstreamWeight" type="number" min="1" step="1" placeholder="1" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="upstreamBaseUrl">Base URL</label>
+                <input id="upstreamBaseUrl" type="text" placeholder="https://api.openai.com" />
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="upstreamFormat">Format</label>
+                  <select id="upstreamFormat">
+                    <option value="">auto</option>
+                    <option value="openai">openai</option>
+                    <option value="anthropic">anthropic</option>
+                    <option value="gemini">gemini</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="upstreamProxy">Proxy</label>
+                  <input id="upstreamProxy" type="text" placeholder="socks5://127.0.0.1:1080" />
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="btn primary" id="addUpstream">新增</button>
+                <button class="btn" id="updateUpstream">更新</button>
+                <button class="btn danger" id="deleteUpstream">删除</button>
+                <label class="segmented-label"><input type="checkbox" id="deleteUpstreamKeys" /> 删除 keys</label>
+              </div>
+              <pre id="upstreamResult" class="pre-box small"></pre>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Keys -->
+      <section class="section" id="keys">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="3.5"/><path d="M10 13 20 3M16 4l3 3M14 6l2.5 2.5"/></svg>
+          <h3>密钥</h3>
+          <span class="rule"></span>
+        </div>
+        <div class="grid">
+          <div class="panel span-4">
+            <div class="panel-header">
+              <h2>计费 Keys</h2>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label for="billingKey">Key</label>
+                <input id="billingKey" type="text" placeholder="bk-..." />
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="billingBalance">初始余额</label>
+                  <input id="billingBalance" type="number" step="1" placeholder="0" />
+                </div>
+                <div class="field">
+                  <label for="billingDelta">余额调整</label>
+                  <input id="billingDelta" type="number" step="1" placeholder="-100" />
+                </div>
+              </div>
+              <div class="billing-actions">
+                <button class="btn primary" id="billingCreate">创建</button>
+                <button class="btn" id="billingQuery">查询</button>
+                <button class="btn" id="billingGenerate">生成</button>
+              </div>
+              <button class="btn" id="billingAdjust">变更余额</button>
+              <pre id="billingResult" class="pre-box small"></pre>
+            </div>
+          </div>
+
+          <div class="panel span-4">
+            <div class="panel-header">
+              <h2>Keys 管理</h2>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label for="upstreamSelect">Upstream</label>
+                <select id="upstreamSelect"></select>
+              </div>
+              <div class="segmented" role="group" aria-label="key 操作模式">
+                <label><input type="radio" name="mode" value="add" checked /> Add</label>
+                <label><input type="radio" name="mode" value="replace" /> Replace</label>
+                <label><input type="radio" name="mode" value="delete" /> Delete</label>
+              </div>
+              <textarea id="keysInput" placeholder="sk-xxx...&#10;每行一个"></textarea>
+              <div class="button-row">
+                <button class="btn primary" id="submitKeys">提交</button>
+                <button class="btn" id="clearKeys">清空</button>
+              </div>
+              <pre id="keysResult" class="pre-box small"></pre>
+            </div>
+          </div>
+
+          <div class="panel span-4">
+            <div class="panel-header">
+              <h2>Keys 状态</h2>
+              <span id="keyStatusInfo" class="status"></span>
+            </div>
+            <div class="stack">
+              <div class="form-grid">
+                <div class="field">
+                  <label for="keyStatusUpstreamSelect">Upstream</label>
+                  <select id="keyStatusUpstreamSelect"></select>
+                </div>
+                <div class="field">
+                  <label for="keySearch">搜索</label>
+                  <input id="keySearch" type="search" placeholder="搜索 key" />
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="keyFilter">状态</label>
+                  <select id="keyFilter">
+                    <option value="all">全部状态</option>
+                    <option value="active">active</option>
+                    <option value="invalid">invalid</option>
+                    <option value="cooldown">cooldown</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label for="keySort">排序</label>
+                  <select id="keySort">
+                    <option value="index">默认排序</option>
+                    <option value="failure_desc">失败次数</option>
+                    <option value="latency_desc">P90 延迟</option>
+                  </select>
+                </div>
+              </div>
+              <div class="button-row">
+                <button class="btn primary" id="loadKeyStatus">查看</button>
+                <button class="btn" id="releaseAllKeys">恢复全部</button>
+                <button class="btn danger" id="banAllKeys">失效全部</button>
+                <button class="btn" id="exportKeys">导出</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel span-12">
+            <div class="panel-header">
+              <h2>Key 明细</h2>
+              <span id="keyStatusPageInfo" class="status"></span>
+            </div>
+            <div class="control-row">
+              <button class="btn" id="keyStatusPrev">上一页</button>
+              <button class="btn" id="keyStatusNext">下一页</button>
+              <label class="label" for="keyStatusPageSize">每页</label>
+              <select id="keyStatusPageSize" aria-label="每页 key 数">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+                <option value="500">500</option>
+              </select>
+            </div>
+            <div class="table-wrap">
+              <table id="keyStatusTable" class="key-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Key</th>
+                    <th>状态</th>
+                    <th>失败</th>
+                    <th>并发</th>
+                    <th>延迟 p50/p90/p99</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <pre id="keyStatusResult" class="pre-box small"></pre>
+            <canvas id="keyLatencyChart" class="chart-canvas" style="margin-top:14px"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- Routes -->
+      <section class="section" id="routes">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5V14a4 4 0 0 0 4 4h5.5"/></svg>
+          <h3>路由与模型</h3>
+          <span class="rule"></span>
+        </div>
+        <div class="route-layout">
+          <div class="panel">
+            <div class="panel-header">
+              <h2>模型路由</h2>
+              <span id="routesInfo" class="status"></span>
+            </div>
+            <div class="control-row">
+              <button class="btn" id="loadRoutes">加载</button>
+              <button class="btn primary" id="saveRoutes">保存</button>
+            </div>
+            <textarea id="routesInput" placeholder='{"upstreams":{"openai":["gpt-4","gpt-3.5-turbo"]}}'></textarea>
+            <pre id="routesResult" class="pre-box small"></pre>
+          </div>
+
+          <div class="panel">
+            <div class="panel-header">
+              <h2>模型发现</h2>
+              <span id="modelsInfo" class="status"></span>
+            </div>
+            <div class="stack">
+              <div class="field">
+                <label for="modelUpstreamSelect">Upstream</label>
+                <select id="modelUpstreamSelect"></select>
+              </div>
+              <div class="button-row">
+                <button class="btn" id="refreshModels">拉取</button>
+                <button class="btn primary" id="applyModels">应用</button>
+                <button class="btn" id="selectAllModels">全选</button>
+                <button class="btn" id="selectNoneModels">全不选</button>
+              </div>
+              <div id="modelsList" class="model-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Config -->
+      <section class="section" id="config">
+        <div class="section-head">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.4"/><circle cx="8" cy="17" r="2.4"/></svg>
+          <h3>配置</h3>
+          <span class="rule"></span>
+        </div>
+        <div class="panel">
+          <div class="panel-header">
+            <h2>配置预览</h2>
+            <span id="configInfo" class="status"></span>
+          </div>
+          <div class="control-row">
+            <button class="btn" id="loadConfig">刷新配置</button>
+          </div>
+          <pre id="configPreview" class="pre-box pre-tall small"></pre>
+        </div>
+      </section>
+    </main>
   </div>
 
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 1; min-width: 320px;">
-      <h2>登录 / Token</h2>
-      <div class="muted">管理 API 需要 admin token（通过 <span class="mono">X-Admin-Token</span>）。</div>
-      <div style="margin-top: 8px; display:flex; gap:8px;">
-        <input id="token" type="password" placeholder="输入 admin token" style="flex:1; padding:6px 8px;" />
-        <button class="btn" id="saveToken">保存</button>
-        <button class="btn" id="clearToken">清除</button>
-      </div>
-      <div id="authStatus" class="small muted" style="margin-top:8px;"></div>
-    </div>
-
-    <div class="card" style="flex: 2; min-width: 480px;">
-      <h2>实时 Stats</h2>
-      <div class="muted">每秒推送一次（SSE）。</div>
-      <pre id="stats" class="small"></pre>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 2; min-width: 520px;">
-      <h2>请求统计</h2>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <select id="requestsWindow" style="padding:6px 8px;">
-          <option value="minute">最近 60 分钟</option>
-          <option value="hour">最近 48 小时</option>
-          <option value="day">最近 30 天</option>
-        </select>
-        <button class="btn" id="refreshRequestsChart">刷新</button>
-        <span id="requestsChartInfo" class="muted small"></span>
-      </div>
-      <canvas id="requestsChart" style="width:100%; height:180px; margin-top:8px;"></canvas>
-      <div class="muted small" style="margin-top:6px;">蓝线=总请求，绿线=成功(2xx)，灰线=失败。</div>
-    </div>
-
-    <div class="card" style="flex: 2; min-width: 520px;">
-      <h2>最近请求</h2>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="refreshRequests">刷新</button>
-        <button class="btn" id="toggleRequestsStream">实时流</button>
-        <span id="requestsInfo" class="muted small"></span>
-      </div>
-      <div style="overflow:auto; max-height: 360px; margin-top: 8px;">
-        <table id="requestsTable">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>IP</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>耗时(ms)</th>
-              <th>Tokens</th>
-              <th>Bytes</th>
-              <th>Upstream</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <pre id="requestDetail" class="small" style="margin-top:8px; max-height:220px;"></pre>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 1; min-width: 360px;">
-      <h2>计费 Keys</h2>
-      <div class="muted">请求必须带 <span class="mono">Authorization</span> 或 <span class="mono">X-Api-Key</span>。</div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Key</label><br/>
-        <input id="billingKey" type="text" placeholder="bk-..." style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">初始余额</label><br/>
-        <input id="billingBalance" type="number" step="1" placeholder="0" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="display:flex; gap:8px; margin-top: 8px; flex-wrap: wrap;">
-        <button class="btn" id="billingCreate">创建</button>
-        <button class="btn" id="billingQuery">查询余额</button>
-        <button class="btn" id="billingGenerate">生成随机</button>
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">余额调整 (delta)</label><br/>
-        <input id="billingDelta" type="number" step="1" placeholder="-100" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="display:flex; gap:8px; margin-top: 8px;">
-        <button class="btn" id="billingAdjust">变更余额</button>
-      </div>
-      <pre id="billingResult" class="small" style="margin-top:8px;"></pre>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 2; min-width: 520px;">
-      <h2>Upstreams</h2>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="refreshUpstreams">刷新</button>
-        <span id="upstreamsInfo" class="muted small"></span>
-      </div>
-      <div style="overflow:auto; max-height: 360px; margin-top: 8px;">
-        <table id="upstreamsTable">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Base URL</th>
-              <th>Format</th>
-              <th>Proxy</th>
-              <th>Weight</th>
-              <th>Keys (active/invalid)</th>
-              <th>Selected</th>
-              <th>2xx</th>
-              <th>4xx</th>
-              <th>5xx</th>
-              <th>NetErr</th>
-              <th>Timeout</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="card" style="flex: 1; min-width: 360px;">
-      <h2>Keys 管理</h2>
-      <div class="muted">支持 <b>批量粘贴</b>（每行一个 key）。推荐一次性粘贴/上传大量 keys，而不是频繁小批量。</div>
-
-      <div style="margin-top: 8px;">
-        <label class="small muted">Upstream</label><br/>
-        <select id="upstreamSelect" style="width:100%; padding:6px 8px;"></select>
-      </div>
-
-      <div style="margin-top: 8px; display:flex; gap:10px; align-items:center;">
-        <label><input type="radio" name="mode" value="add" checked /> Add</label>
-        <label><input type="radio" name="mode" value="replace" /> Replace</label>
-        <label><input type="radio" name="mode" value="delete" /> Delete</label>
-      </div>
-
-      <div style="margin-top: 8px;">
-        <textarea id="keysInput" placeholder="sk-xxx...\n每行一个"></textarea>
-      </div>
-
-      <div style="display:flex; gap:8px; margin-top: 8px;">
-        <button class="btn" id="submitKeys">提交</button>
-        <button class="btn" id="clearKeys">清空</button>
-      </div>
-
-      <pre id="keysResult" class="small" style="margin-top:8px;"></pre>
-    </div>
-
-    <div class="card" style="flex: 1; min-width: 360px;">
-      <h2>Upstream 管理</h2>
-      <div class="muted">增删改 upstream，不影响主业务请求路径。</div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">已有 upstream</label><br/>
-        <select id="upstreamManageSelect" style="width:100%; padding:6px 8px;"></select>
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">ID</label><br/>
-        <input id="upstreamId" type="text" placeholder="openai" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Base URL</label><br/>
-        <input id="upstreamBaseUrl" type="text" placeholder="https://api.openai.com" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Weight</label><br/>
-        <input id="upstreamWeight" type="number" min="1" step="1" placeholder="1" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Format</label><br/>
-        <select id="upstreamFormat" style="width:100%; padding:6px 8px;">
-          <option value="">auto</option>
-          <option value="openai">openai</option>
-          <option value="anthropic">anthropic</option>
-          <option value="gemini">gemini</option>
-        </select>
-      </div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Proxy</label><br/>
-        <input id="upstreamProxy" type="text" placeholder="socks5://127.0.0.1:1080" style="width:100%; padding:6px 8px;" />
-      </div>
-      <div style="display:flex; gap:8px; margin-top: 8px; flex-wrap: wrap;">
-        <button class="btn" id="addUpstream">新增</button>
-        <button class="btn" id="updateUpstream">更新</button>
-        <button class="btn" id="deleteUpstream">删除</button>
-        <label class="small muted" style="display:flex; align-items:center; gap:4px;">
-          <input type="checkbox" id="deleteUpstreamKeys" /> 删除 keys
-        </label>
-      </div>
-      <pre id="upstreamResult" class="small" style="margin-top:8px;"></pre>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 2; min-width: 640px;">
-      <h2>Keys 状态</h2>
-      <div class="muted">查看每个 key 的状态，可单独恢复/失效，或一键恢复全部 / 一键失效全部。Invalid key 会被定时验证自动恢复。</div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top: 8px;">
-        <select id="keyStatusUpstreamSelect" style="padding:6px 8px; min-width:160px;"></select>
-        <input id="keySearch" type="search" placeholder="搜索 key" style="padding:6px 8px; min-width:180px;" />
-        <select id="keyFilter" style="padding:6px 8px;">
-          <option value="all">全部状态</option>
-          <option value="active">active</option>
-          <option value="invalid">invalid</option>
-          <option value="cooldown">cooldown</option>
-        </select>
-        <select id="keySort" style="padding:6px 8px;">
-          <option value="index">默认排序</option>
-          <option value="failure_desc">失败次数</option>
-          <option value="latency_desc">P90 延迟</option>
-        </select>
-        <button class="btn" id="loadKeyStatus">查看 / 刷新</button>
-        <button class="btn" id="releaseAllKeys">一键恢复全部</button>
-        <button class="btn" id="banAllKeys">一键失效全部</button>
-        <button class="btn" id="exportKeys" style="margin-left:12px;">导出 Keys</button>
-        <span id="keyStatusInfo" class="muted small"></span>
-      </div>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top: 8px;">
-        <button class="btn" id="keyStatusPrev">上一页</button>
-        <button class="btn" id="keyStatusNext">下一页</button>
-        <label class="small muted">每页</label>
-        <select id="keyStatusPageSize" style="padding:6px 8px;">
-          <option value="50">50</option>
-          <option value="100" selected>100</option>
-          <option value="200">200</option>
-          <option value="500">500</option>
-        </select>
-        <span id="keyStatusPageInfo" class="muted small"></span>
-      </div>
-      <div style="overflow:auto; max-height: 420px; margin-top: 8px;">
-        <table id="keyStatusTable">
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Key</th>
-              <th>状态</th>
-              <th>失败次数</th>
-              <th>并发</th>
-              <th>延迟 p50/p90/p99</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <pre id="keyStatusResult" class="small" style="margin-top:8px;"></pre>
-      <canvas id="keyLatencyChart" style="width:100%; height:180px; margin-top:8px;"></canvas>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 2; min-width: 520px;">
-      <h2>配置预览</h2>
-      <div style="display:flex; gap:8px; align-items:center;">
-        <button class="btn" id="loadConfig">刷新配置</button>
-        <span id="configInfo" class="muted small"></span>
-      </div>
-      <pre id="configPreview" class="small" style="margin-top:8px; max-height:420px;"></pre>
-    </div>
-  </div>
-
-  <div class="row" style="margin-top: 14px;">
-    <div class="card" style="flex: 2; min-width: 520px;">
-      <h2>模型路由</h2>
-      <div class="muted">只使用 <span class="mono">models_routes.json</span> 中的路由。未匹配模型会返回 404。</div>
-      <div style="display:flex; gap:8px; align-items:center; margin-top: 8px;">
-        <button class="btn" id="loadRoutes">加载路由</button>
-        <button class="btn" id="saveRoutes">保存路由</button>
-        <span id="routesInfo" class="muted small"></span>
-      </div>
-      <div style="margin-top: 8px;">
-        <textarea id="routesInput" placeholder='{"upstreams":{"openai":["gpt-4","gpt-3.5-turbo"]}}'></textarea>
-      </div>
-      <pre id="routesResult" class="small" style="margin-top:8px;"></pre>
-    </div>
-
-    <div class="card" style="flex: 1; min-width: 360px;">
-      <h2>模型发现</h2>
-      <div class="muted">只拉取模型列表，不会自动写入路由。</div>
-      <div style="margin-top: 8px;">
-        <label class="small muted">Upstream</label><br/>
-        <select id="modelUpstreamSelect" style="width:100%; padding:6px 8px;"></select>
-      </div>
-      <div style="display:flex; gap:8px; margin-top: 8px;">
-        <button class="btn" id="refreshModels">拉取 models</button>
-        <button class="btn" id="applyModels">应用到路由</button>
-        <button class="btn" id="selectAllModels">全选</button>
-        <button class="btn" id="selectNoneModels">全不选</button>
-      </div>
-      <div id="modelsInfo" class="muted small" style="margin-top:6px;"></div>
-      <div id="modelsList" style="margin-top:8px; max-height:260px; overflow:auto; border:1px solid #eee; border-radius:6px; padding:6px;"></div>
-    </div>
-  </div>
-
-<script src="/admin/app.js"></script>
+  <script src="/admin/app.js"></script>
 </body>
 </html>

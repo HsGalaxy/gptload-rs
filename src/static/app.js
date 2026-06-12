@@ -83,6 +83,12 @@
   const configInfo = document.getElementById('configInfo');
   const configPreview = document.getElementById('configPreview');
 
+  const statsGrid = document.getElementById('statsGrid');
+  const statsDist = document.getElementById('statsDist');
+  const distInfo = document.getElementById('distInfo');
+  const connState = document.getElementById('connState');
+  const themeToggleLabel = document.getElementById('themeToggleLabel');
+
   let lastModels = [];
   let lastUpstreams = [];
   let requestsTimer = null;
@@ -103,13 +109,23 @@
     localStorage.removeItem('gptload_admin_token');
   }
 
+  const MOON_ICON = '<path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.6 6.6 0 0 0 21 12.8Z"/>';
+  const SUN_ICON = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5.6 5.6 4.2 4.2M19.8 19.8l-1.4-1.4M18.4 5.6l1.4-1.4M4.2 19.8l1.4-1.4"/>';
+
   function applyTheme(theme) {
     document.body.classList.remove('dark', 'light');
     if (theme === 'dark' || theme === 'light') {
       document.body.classList.add(theme);
     }
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const isDark = theme === 'dark' || (theme !== 'light' && prefersDark);
+    if (themeToggleLabel) {
+      themeToggleLabel.textContent = isDark ? '浅色' : '深色';
+    }
     if (themeToggle) {
-      themeToggle.textContent = theme === 'dark' ? '浅色' : '深色';
+      const svg = themeToggle.querySelector('svg');
+      if (svg) svg.innerHTML = isDark ? SUN_ICON : MOON_ICON;
+      themeToggle.setAttribute('title', isDark ? '切换到浅色' : '切换到深色');
     }
   }
 
@@ -148,6 +164,8 @@
     refreshUpstreams();
     stopRequestsAutoRefresh();
     stopRequestsStream();
+    setConn('', '未连接');
+    renderStatsSkeleton();
   };
 
   async function apiFetch(path, opts) {
@@ -164,6 +182,12 @@
     return { res, text, json };
   }
 
+  function cssVar(name, fallback) {
+    const v = getComputedStyle(document.body).getPropertyValue(name).trim()
+      || getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
   function setUpstreams(list) {
     lastUpstreams = Array.isArray(list) ? list : [];
     // Table
@@ -174,11 +198,11 @@
       const invalid = u.keys_invalid || 0;
       const keysClass = invalid > 0 ? 'bad' : 'ok';
       tr.innerHTML = `
-        <td class="mono">${escapeHtml(u.id)}</td>
-        <td class="mono small">${escapeHtml(u.base_url)}</td>
+        <td class="mono cell-truncate" title="${escapeHtml(u.id)}">${escapeHtml(u.id)}</td>
+        <td class="mono small cell-truncate cell-url" title="${escapeHtml(u.base_url)}">${escapeHtml(u.base_url)}</td>
         <td class="mono small">${escapeHtml(u.format || 'openai')}</td>
-        <td class="mono small">${escapeHtml(u.proxy || '-')}</td>
-        <td><input type="range" min="1" max="100" value="${u.weight}" data-upstream="${escapeHtml(u.id)}" class="weightSlider" style="width:120px;" /> <span class="mono small">${u.weight}</span></td>
+        <td class="mono small cell-truncate" title="${escapeHtml(u.proxy || '-')}">${escapeHtml(u.proxy || '-')}</td>
+        <td><div class="slider-cell"><input type="range" min="1" max="100" value="${u.weight}" data-upstream="${escapeHtml(u.id)}" class="weightSlider" aria-label="weight ${escapeHtml(u.id)}" /> <span class="mono small">${u.weight}</span></div></td>
         <td class="${keysClass}">${active}/${invalid}</td>
         <td class="mono small">${u.selected_total || 0}</td>
         <td class="mono small">${u.responses_2xx || 0}</td>
@@ -253,15 +277,16 @@
     const ctx = requestsChart.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     const width = requestsChart.clientWidth || 600;
-    const height = 180;
+    const height = 190;
     requestsChart.width = width * dpr;
     requestsChart.height = height * dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
 
     if (!buckets || buckets.length === 0) {
-      ctx.fillStyle = '#666';
-      ctx.fillText('暂无数据', 10, 20);
+      ctx.fillStyle = cssVar('--muted', '#667085');
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.fillText('暂无数据', 10, 22);
       return;
     }
 
@@ -273,7 +298,7 @@
     const innerW = width - pad * 2;
     const innerH = height - pad * 2;
 
-    ctx.strokeStyle = '#eee';
+    ctx.strokeStyle = cssVar('--grid', '#edf0f4');
     ctx.lineWidth = 1;
     for (let i = 0; i <= 3; i++) {
       const y = pad + (innerH * i) / 3;
@@ -283,22 +308,36 @@
       ctx.stroke();
     }
 
-    function drawLine(values, color) {
+    const xAt = i => pad + innerW * (i / (totals.length - 1 || 1));
+    const yAt = v => pad + innerH * (1 - v / maxVal);
+
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+
+    function drawLine(values, color, fillAlpha) {
+      if (fillAlpha) {
+        ctx.beginPath();
+        values.forEach((v, i) => { const x = xAt(i), y = yAt(v); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
+        ctx.lineTo(xAt(values.length - 1), pad + innerH);
+        ctx.lineTo(xAt(0), pad + innerH);
+        ctx.closePath();
+        ctx.save();
+        ctx.globalAlpha = fillAlpha;
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.restore();
+      }
       ctx.beginPath();
-      values.forEach((v, i) => {
-        const x = pad + innerW * (i / (values.length - 1 || 1));
-        const y = pad + innerH * (1 - v / maxVal);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
+      values.forEach((v, i) => { const x = xAt(i), y = yAt(v); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
       ctx.stroke();
     }
 
-    drawLine(totals, '#1e6bd6');
-    drawLine(successes, '#0a7');
-    drawLine(failures, '#999');
+    const accent = cssVar('--accent', '#3a5bd0');
+    drawLine(totals, accent, 0.13);
+    drawLine(successes, cssVar('--ok', '#0e9f6e'));
+    drawLine(failures, cssVar('--bad', '#df2c3e'));
   }
 
   async function refreshRequestsChart() {
@@ -333,7 +372,7 @@
     const tr = document.createElement('tr');
     tr.className = 'clickable';
     const status = r.status || 0;
-    const statusClass = status >= 200 && status < 300 ? 'ok' : (status === 404 ? 'muted' : 'bad');
+    const statusClass = status >= 200 && status < 300 ? 'ok' : (status === 404 || status === 0 ? 'muted' : 'bad');
     const tokens = r.total_tokens != null
       ? `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.total_tokens}`
       : '-';
@@ -341,12 +380,12 @@
     tr.innerHTML = `
       <td class="small">${new Date(r.ts_ms).toLocaleTimeString()}</td>
       <td class="mono small">${escapeHtml(r.client_ip || '')}</td>
-      <td class="mono small">${escapeHtml(r.model || '-')}</td>
-      <td class="${statusClass}">${status}</td>
+      <td class="mono small cell-truncate" title="${escapeHtml(r.model || '-')}">${escapeHtml(r.model || '-')}</td>
+      <td><span class="pill ${statusClass}">${status || '—'}</span></td>
       <td class="mono small">${r.latency_ms || 0}</td>
       <td class="mono small">${tokens}</td>
       <td class="mono small">${bytes}</td>
-      <td class="mono small">${escapeHtml(r.upstream_id || '-')}</td>
+      <td class="mono small cell-truncate" title="${escapeHtml(r.upstream_id || '-')}">${escapeHtml(r.upstream_id || '-')}</td>
     `;
     tr.onclick = () => {
       if (requestDetail) requestDetail.textContent = JSON.stringify(r, null, 2);
@@ -742,8 +781,6 @@
     }
     for (const m of models) {
       const label = document.createElement('label');
-      label.style.display = 'block';
-      label.style.margin = '2px 0';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.value = m;
@@ -839,32 +876,33 @@
     list.forEach((k, i) => {
       const tr = document.createElement('tr');
       const isInvalid = k.status === 'invalid';
-      const statusClass = isInvalid ? 'bad' : 'ok';
+      const inCooldown = !isInvalid && k.cooldown_until_ms && k.cooldown_until_ms > Date.now();
+      const stCls = isInvalid ? 'bad' : (inCooldown ? 'warn' : 'ok');
+      const stLabel = isInvalid ? 'invalid' : (inCooldown ? 'cooldown' : 'active');
       const lat = k.latency_p50_ms != null ? `${k.latency_p50_ms}/${k.latency_p90_ms || 0}/${k.latency_p99_ms || 0}` : '-';
       tr.innerHTML = `
         <td class="mono small">${offset + i + 1}</td>
-        <td class="mono small" title="${escapeHtml(k.key)}">${escapeHtml(maskKey(k.key))}</td>
-        <td class="${statusClass}">${isInvalid ? 'invalid' : 'active'}</td>
+        <td class="mono small cell-truncate" title="${escapeHtml(k.key)}">${escapeHtml(maskKey(k.key))}</td>
+        <td><span class="pill ${stCls}">${stLabel}</span></td>
         <td class="mono small">${k.failure_count || 0}</td>
         <td class="mono small">${k.active_requests || 0}</td>
         <td class="mono small">${lat}</td>
       `;
       const actionTd = document.createElement('td');
+      actionTd.className = 'cell-actions';
       const relBtn = document.createElement('button');
       relBtn.className = 'btn';
       relBtn.textContent = '恢复';
       relBtn.dataset.key = k.key;
       relBtn.onclick = () => keyAction('release', [relBtn.dataset.key]);
       const banBtn = document.createElement('button');
-      banBtn.className = 'btn';
+      banBtn.className = 'btn danger';
       banBtn.textContent = '失效';
-      banBtn.style.marginLeft = '6px';
       banBtn.dataset.key = k.key;
       banBtn.onclick = () => keyAction('invalidate', [banBtn.dataset.key]);
       const testBtn = document.createElement('button');
       testBtn.className = 'btn';
       testBtn.textContent = '测试';
-      testBtn.style.marginLeft = '6px';
       testBtn.dataset.key = k.key;
       testBtn.onclick = () => testKey(testBtn.dataset.key);
       actionTd.appendChild(relBtn);
@@ -959,7 +997,7 @@
     if (keyLatencyChart) keyLatencyChart.destroy();
     keyLatencyChart = new Chart(keyLatencyChartCanvas, {
       type: 'bar',
-      data: { labels, datasets: [{ label: 'p90 ms', data, backgroundColor: '#1e6bd6' }] },
+      data: { labels, datasets: [{ label: 'p90 ms', data, backgroundColor: cssVar('--accent', '#1769aa') }] },
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -1037,6 +1075,129 @@
     }[c]));
   }
 
+  // ----- Overview KPI cards / distribution -----
+  const KICON = {
+    pulse: '<path d="M3 12h4l2.5 7 4-15 2.5 8H21"/>',
+    spin: '<path d="M21 12a9 9 0 1 1-6.2-8.6"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    timer: '<circle cx="12" cy="13" r="8"/><path d="M12 13V9M9 2h6"/>',
+    alert: '<path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>',
+    queue: '<rect x="3" y="4" width="18" height="5" rx="1.5"/><rect x="3" y="11" width="18" height="5" rx="1.5"/><path d="M6 20h12"/>',
+    server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'
+  };
+  function kicon(n) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${KICON[n] || ''}</svg>`;
+  }
+
+  function fmtInt(n) {
+    n = Number(n);
+    if (!Number.isFinite(n)) n = 0;
+    return Math.round(n).toLocaleString('en-US');
+  }
+  function fmtLatency(ms) {
+    ms = Number(ms) || 0;
+    if (ms <= 0) return { v: '0', u: 'ms' };
+    if (ms < 10) return { v: ms.toFixed(1), u: 'ms' };
+    if (ms < 100000) return { v: fmtInt(ms), u: 'ms' };
+    return { v: (ms / 1000).toFixed(1), u: 's' };
+  }
+
+  function kpiCard(o) {
+    const unit = o.unit ? `<span class="unit">${o.unit}</span>` : '';
+    const sub = o.sub ? `<div class="kpi-sub">${o.sub}</div>` : '';
+    const bar = (o.bar != null)
+      ? `<div class="kpi-bar"><span style="width:${Math.max(0, Math.min(100, o.bar))}%;background:${o.barColor || 'var(--ok)'}"></span></div>`
+      : '';
+    return `<div class="kpi ${o.cls || ''}">
+      <div class="kpi-top">${kicon(o.icon)}<span class="kpi-label">${o.label}</span></div>
+      <div class="kpi-value">${o.value}${unit}</div>${sub}${bar}
+    </div>`;
+  }
+
+  function renderStatsSkeleton() {
+    if (!statsGrid) return;
+    const labels = ['总请求', '进行中', '成功率', '平均延迟', '错误', '队列', '上游', '运行时长'];
+    statsGrid.innerHTML = labels.map(l =>
+      `<div class="kpi"><div class="kpi-top"><span class="kpi-label">${l}</span></div><div class="kpi-value skeleton">000</div></div>`
+    ).join('');
+    if (statsDist) statsDist.innerHTML = '<div class="kpi-empty">连接后显示响应分布</div>';
+  }
+
+  function renderStats(snap) {
+    if (!snap || typeof snap !== 'object') return;
+    const r2 = snap.responses_2xx || 0, r3 = snap.responses_3xx || 0,
+      r4 = snap.responses_4xx || 0, r5 = snap.responses_5xx || 0;
+    const resp = r2 + r3 + r4 + r5;
+    const rate = resp > 0 ? (r2 / resp) * 100 : null;
+    const errs = (snap.errors_timeout || 0) + (snap.errors_network || 0);
+    const ups = Array.isArray(snap.upstreams) ? snap.upstreams : [];
+    const activeKeys = ups.reduce((a, u) => a + (u.keys_active != null ? u.keys_active : (u.keys_total || 0)), 0);
+    const totalKeys = ups.reduce((a, u) => a + (u.keys_total || 0), 0);
+    const avg = fmtLatency(snap.latency_avg_ms);
+    const mx = fmtLatency(snap.latency_max_ms);
+
+    let rateVal = '—', rateBar = null, rateColor = 'var(--ok)', rateCls = '';
+    if (rate != null) {
+      rateVal = rate >= 99.95 ? '100' : rate.toFixed(1);
+      rateBar = rate;
+      if (rate >= 99) { rateColor = 'var(--ok)'; rateCls = 'ok-edge'; }
+      else if (rate >= 90) { rateColor = 'var(--warn)'; rateCls = ''; }
+      else { rateColor = 'var(--bad)'; rateCls = 'bad-edge'; }
+    }
+
+    const uptime = snap.uptime_s ? formatDuration(snap.uptime_s * 1000) : '0s';
+
+    const cards = [
+      kpiCard({ icon: 'pulse', label: '总请求', value: fmtInt(snap.requests_total),
+        sub: `命中上游 <b>${fmtInt(snap.upstream_selected_total)}</b>` }),
+      kpiCard({ icon: 'spin', label: '进行中', value: fmtInt(snap.requests_inflight), cls: 'accent',
+        sub: '当前并发请求' }),
+      kpiCard({ icon: 'check', label: '成功率', value: rateVal, unit: rate != null ? '%' : '',
+        cls: rateCls, bar: rateBar, barColor: rateColor,
+        sub: `2xx <b>${fmtInt(r2)}</b> / ${fmtInt(resp)}` }),
+      kpiCard({ icon: 'timer', label: '平均延迟', value: avg.v, unit: avg.u,
+        sub: `峰值 <b>${mx.v}${mx.u}</b> · 样本 ${fmtInt(snap.latency_count)}` }),
+      kpiCard({ icon: 'alert', label: '错误', value: fmtInt(errs), cls: errs > 0 ? 'bad-edge' : '',
+        sub: `超时 <b>${fmtInt(snap.errors_timeout)}</b> · 网络 <b>${fmtInt(snap.errors_network)}</b>` }),
+      kpiCard({ icon: 'queue', label: '队列', value: snap.queue_enabled ? fmtInt(snap.queue_depth) : '—',
+        sub: snap.queue_enabled ? `超时丢弃 <b>${fmtInt(snap.queue_timeout_total)}</b>` : '未启用' }),
+      kpiCard({ icon: 'server', label: '上游', value: fmtInt(ups.length),
+        sub: `活跃 keys <b>${fmtInt(activeKeys)}</b> / ${fmtInt(totalKeys)}` }),
+      kpiCard({ icon: 'clock', label: '运行时长', value: uptime,
+        sub: `重试上限 <b>${fmtInt(snap.max_retries)}</b>` })
+    ];
+    if (statsGrid) statsGrid.innerHTML = cards.join('');
+
+    if (statsDist) {
+      if (resp === 0) {
+        statsDist.innerHTML = '<div class="kpi-empty">暂无响应数据</div>';
+        if (distInfo) distInfo.textContent = '';
+      } else {
+        const seg = (c, cls, label) => c > 0
+          ? `<span class="${cls}" style="flex-grow:${c}" title="${label}: ${fmtInt(c)}">${(c / resp) >= 0.07 ? fmtInt(c) : ''}</span>`
+          : '';
+        statsDist.innerHTML =
+          `<div class="dist">${seg(r2, 'd2', '2xx')}${seg(r3, 'd3', '3xx')}${seg(r4, 'd4', '4xx')}${seg(r5, 'd5', '5xx')}</div>
+           <div class="dist-legend">
+             <span><i style="background:var(--ok)"></i>2xx ${fmtInt(r2)}</span>
+             <span><i style="background:var(--accent)"></i>3xx ${fmtInt(r3)}</span>
+             <span><i style="background:var(--warn)"></i>4xx ${fmtInt(r4)}</span>
+             <span><i style="background:var(--bad)"></i>5xx ${fmtInt(r5)}</span>
+           </div>`;
+        if (distInfo) distInfo.textContent = `total ${fmtInt(resp)}`;
+      }
+    }
+  }
+
+  function setConn(state, text) {
+    if (!connState) return;
+    connState.classList.remove('on', 'bad');
+    if (state === 'on') connState.classList.add('on');
+    else if (state === 'bad') connState.classList.add('bad');
+    connState.textContent = text;
+  }
+
   // Stats stream (fetch + ReadableStream with X-Admin-Token)
   let statsAbort = null;
   let statsRetryTimer = null;
@@ -1069,6 +1230,7 @@
         try {
           const json = JSON.parse(data);
           statsPre.textContent = JSON.stringify(json, null, 2);
+          try { renderStats(json); } catch (_) {}
         } catch (e) {
           statsPre.textContent = data;
         }
@@ -1086,10 +1248,12 @@
     const t = getToken();
     if (!t) {
       statsPre.textContent = '未设置 token。';
+      setConn('', '未连接');
       return;
     }
 
     authStatus.textContent = 'Stats stream 连接中...';
+    setConn('', '连接中…');
 
     const controller = new AbortController();
     statsAbort = controller;
@@ -1103,6 +1267,7 @@
     } catch (e) {
       if (!controller.signal.aborted) {
         authStatus.textContent = 'Stats stream 连接失败（将自动重连）。';
+        setConn('bad', '重连中…');
         scheduleStatsRetry();
       }
       return;
@@ -1110,10 +1275,12 @@
 
     if (!res.ok || !res.body) {
       authStatus.textContent = `Stats stream 失败: ${res.status}`;
+      setConn('bad', `失败 ${res.status}`);
       return;
     }
 
     authStatus.textContent = 'Stats stream 已连接。';
+    setConn('on', '实时');
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -1131,11 +1298,13 @@
       buf = processSseBuffer(buf);
       if (!controller.signal.aborted) {
         authStatus.textContent = 'Stats stream 已结束（将自动重连）。';
+        setConn('bad', '重连中…');
         scheduleStatsRetry();
       }
     } catch (e) {
       if (!controller.signal.aborted) {
         authStatus.textContent = 'Stats stream 连接异常（将自动重连）。';
+        setConn('bad', '重连中…');
         scheduleStatsRetry();
       }
     }
@@ -1171,7 +1340,30 @@
     }
   }
 
+  // Scroll-spy: highlight the active nav item as sections cross the viewport.
+  function setupScrollSpy() {
+    const links = Array.from(document.querySelectorAll('.nav a[data-section]'));
+    if (!links.length || !('IntersectionObserver' in window)) return;
+    const visible = new Map();
+    const obs = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (e.isIntersecting) visible.set(e.target.id, e.intersectionRatio);
+        else visible.delete(e.target.id);
+      }
+      let best = null, bestRatio = -1;
+      visible.forEach((ratio, id) => { if (ratio > bestRatio) { bestRatio = ratio; best = id; } });
+      if (best) links.forEach(a => a.classList.toggle('active', a.dataset.section === best));
+    }, { rootMargin: '-78px 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] });
+    document.querySelectorAll('.section[id]').forEach(s => obs.observe(s));
+    links.forEach(a => a.addEventListener('click', () => {
+      links.forEach(x => x.classList.remove('active'));
+      a.classList.add('active');
+    }));
+  }
+
   // Init
+  renderStatsSkeleton();
+  setupScrollSpy();
   if (getToken()) {
     authStatus.textContent = '已加载本地 token。';
     startStatsStream();
@@ -1182,5 +1374,6 @@
   } else {
     authStatus.textContent = '请输入并保存 admin token。';
     statsPre.textContent = '未连接。';
+    setConn('', '未连接');
   }
 })();
