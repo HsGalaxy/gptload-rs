@@ -292,24 +292,30 @@ pub struct MetricsBucket {
 
 #[derive(Clone, Copy)]
 pub enum MetricsWindow {
-    Minute,
-    Hour,
+    OneMin,
+    FiveMin,
+    ThirtyMin,
+    OneHour,
     Day,
 }
 
 impl MetricsWindow {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "hour" => MetricsWindow::Hour,
+            "5min" | "5m" => MetricsWindow::FiveMin,
+            "30min" | "30m" => MetricsWindow::ThirtyMin,
+            "1h" | "hour" => MetricsWindow::OneHour,
             "day" => MetricsWindow::Day,
-            _ => MetricsWindow::Minute,
+            _ => MetricsWindow::OneMin,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            MetricsWindow::Minute => "minute",
-            MetricsWindow::Hour => "hour",
+            MetricsWindow::OneMin => "1min",
+            MetricsWindow::FiveMin => "5min",
+            MetricsWindow::ThirtyMin => "30min",
+            MetricsWindow::OneHour => "1h",
             MetricsWindow::Day => "day",
         }
     }
@@ -371,16 +377,20 @@ impl RequestsLog {
 }
 
 pub struct RequestMetrics {
-    minute: VecDeque<MetricsBucket>,
-    hour: VecDeque<MetricsBucket>,
+    m1: VecDeque<MetricsBucket>,
+    m5: VecDeque<MetricsBucket>,
+    m30: VecDeque<MetricsBucket>,
+    h1: VecDeque<MetricsBucket>,
     day: VecDeque<MetricsBucket>,
 }
 
 impl RequestMetrics {
     pub fn new() -> Self {
         Self {
-            minute: VecDeque::new(),
-            hour: VecDeque::new(),
+            m1: VecDeque::new(),
+            m5: VecDeque::new(),
+            m30: VecDeque::new(),
+            h1: VecDeque::new(),
             day: VecDeque::new(),
         }
     }
@@ -389,20 +399,22 @@ impl RequestMetrics {
         let (success, failure, ignored) = classify_status(entry.status);
         let ts_ms = entry.ts_ms;
 
+        update_bucket(&mut self.m1, ts_ms, 60_000, 60, success, failure, ignored);
+        update_bucket(&mut self.m5, ts_ms, 300_000, 60, success, failure, ignored);
         update_bucket(
-            &mut self.minute,
+            &mut self.m30,
             ts_ms,
-            60_000,
-            60,
+            1_800_000,
+            48,
             success,
             failure,
             ignored,
         );
         update_bucket(
-            &mut self.hour,
+            &mut self.h1,
             ts_ms,
             3_600_000,
-            48,
+            24,
             success,
             failure,
             ignored,
@@ -420,8 +432,10 @@ impl RequestMetrics {
 
     pub fn snapshot(&self, window: MetricsWindow) -> Vec<MetricsBucket> {
         match window {
-            MetricsWindow::Minute => self.minute.iter().cloned().collect(),
-            MetricsWindow::Hour => self.hour.iter().cloned().collect(),
+            MetricsWindow::OneMin => self.m1.iter().cloned().collect(),
+            MetricsWindow::FiveMin => self.m5.iter().cloned().collect(),
+            MetricsWindow::ThirtyMin => self.m30.iter().cloned().collect(),
+            MetricsWindow::OneHour => self.h1.iter().cloned().collect(),
             MetricsWindow::Day => self.day.iter().cloned().collect(),
         }
     }

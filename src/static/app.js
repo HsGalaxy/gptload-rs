@@ -344,7 +344,7 @@
 
   async function refreshRequestsChart() {
     if (!requestsWindowSelect) return;
-    const windowKey = requestsWindowSelect.value || 'minute';
+    const windowKey = requestsWindowSelect.value || '1min';
     const { res, json, text } = await apiFetch(`/admin/api/v1/metrics?window=${encodeURIComponent(windowKey)}`);
     if (!res.ok) {
       requestsChartInfo.textContent = `失败 ${res.status}`;
