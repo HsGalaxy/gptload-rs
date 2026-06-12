@@ -65,7 +65,7 @@ jobs:
           
           # 只有手动触发时，文件名才会带上自定义输入的 tag
           # 自动触发时使用 github.ref_name (即 v1.0.x)
-          TAG="${{ github.event.inputs.tag_name || github.ref_name }}"
+          TAG="${{ inputs.tag_name || github.ref_name }}"
           DEST_NAME="${{ env.BINARY_NAME }}-$TAG-linux-${{ matrix.arch }}"
           mv "$SOURCE_BIN" "./dist/$DEST_NAME"
 
@@ -74,7 +74,7 @@ jobs:
         with:
           # 核心修复：手动指定 tag_name，解决“爆炸”问题
           # 如果是手动触发，使用输入的 tag_name；否则使用 Git 推送的标签
-          tag_name: ${{ github.event.inputs.tag_name || github.ref }}
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
           generate_release_notes: true
           files: ./dist/*
         env:
