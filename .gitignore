@@ -1,6 +1,5 @@
 # Rust
 /target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -20,6 +19,9 @@ config.toml
 # Test outputs
 unexpected_responses/
 available_models_*.json
+
+# Local dev / tmp
+tmp/
 
 # Python
 __pycache__/
