@@ -513,6 +513,27 @@ struct UpstreamUpdateBody {
     proxy: Option<String>,
 }
 
+fn validate_upstream_limits(
+    weight: Option<usize>,
+    max_concurrent_per_key: Option<u32>,
+) -> Option<Response<Body>> {
+    if weight.unwrap_or(1) > 10_000 {
+        return Some(RouterState::json_error(
+            http::StatusCode::BAD_REQUEST,
+            "weight must be <= 10000",
+            "bad_request",
+        ));
+    }
+    if max_concurrent_per_key.unwrap_or(0) > 256 {
+        return Some(RouterState::json_error(
+            http::StatusCode::BAD_REQUEST,
+            "max_concurrent_per_key must be <= 256",
+            "bad_request",
+        ));
+    }
+    None
+}
+
 async fn api_add_upstream(req: Request<Body>, state: Arc<RouterState>) -> Response<Body> {
     let input: UpstreamBody = match parse_json_body(req).await {
         Ok(v) => v,
@@ -527,6 +548,9 @@ async fn api_add_upstream(req: Request<Body>, state: Arc<RouterState>) -> Respon
             "missing base_url",
             "bad_request",
         );
+    }
+    if let Some(resp) = validate_upstream_limits(input.weight, input.max_concurrent_per_key) {
+        return resp;
     }
     let cfg = UpstreamConfig {
         id: input.id.trim().to_string(),
@@ -569,6 +593,9 @@ async fn api_update_upstream(
             "missing base_url",
             "bad_request",
         );
+    }
+    if let Some(resp) = validate_upstream_limits(input.weight, input.max_concurrent_per_key) {
+        return resp;
     }
     let state2 = state.clone();
     let id = upstream_id.to_string();
