@@ -1,6 +1,7 @@
 #![allow(clippy::result_large_err)]
 
 use crate::config::UpstreamFormat;
+use base64::Engine as _;
 use bytes::Bytes;
 use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{Body, Method, Response};
@@ -130,6 +131,12 @@ fn adapt_anthropic_request(
     if !system_parts.is_empty() {
         out["system"] = serde_json::Value::String(system_parts.join("\n\n"));
     }
+    if let Some(tools) = openai_tools_to_anthropic(v.get("tools")) {
+        out["tools"] = tools;
+    }
+    if let Some(tool_choice) = openai_tool_choice_to_anthropic(v.get("tool_choice")) {
+        out["tool_choice"] = tool_choice;
+    }
     copy_number(&v, &mut out, "temperature", "temperature");
     copy_number(&v, &mut out, "top_p", "top_p");
     if let Some(stop) = v.get("stop") {
@@ -179,18 +186,21 @@ fn adapt_gemini_request(
                 .get("content")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let text = content_to_text(&content);
-            if text.is_empty() {
+            if role == "system" {
+                let text = content_to_text(&content);
+                if !text.is_empty() {
+                    system_parts.push(text);
+                }
                 continue;
             }
-            if role == "system" {
-                system_parts.push(text);
+            let parts = content_to_gemini_parts(&content);
+            if parts.is_empty() {
                 continue;
             }
             let out_role = if role == "assistant" { "model" } else { "user" };
             contents.push(serde_json::json!({
                 "role": out_role,
-                "parts": [{"text": text}],
+                "parts": parts,
             }));
         }
     }
@@ -288,23 +298,283 @@ fn content_to_text(content: &serde_json::Value) -> String {
     }
 }
 
+fn openai_tools_to_anthropic(tools: Option<&serde_json::Value>) -> Option<serde_json::Value> {
+    let tools = tools.and_then(|v| v.as_array())?;
+    let converted: Vec<serde_json::Value> = tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?;
+            let name = function.get("name").and_then(|v| v.as_str())?;
+            let mut out = serde_json::Map::new();
+            out.insert("name".to_string(), serde_json::json!(name));
+            if let Some(description) = function.get("description").and_then(|v| v.as_str()) {
+                out.insert("description".to_string(), serde_json::json!(description));
+            }
+            out.insert(
+                "input_schema".to_string(),
+                function
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+            );
+            Some(serde_json::Value::Object(out))
+        })
+        .collect();
+    if converted.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(converted))
+    }
+}
+
+fn openai_tool_choice_to_anthropic(
+    tool_choice: Option<&serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match tool_choice? {
+        serde_json::Value::String(choice) => match choice.as_str() {
+            "auto" => Some(serde_json::json!({ "type": "auto" })),
+            "required" | "any" => Some(serde_json::json!({ "type": "any" })),
+            "none" => None,
+            _ => None,
+        },
+        serde_json::Value::Object(obj) => {
+            let name = obj
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|v| v.as_str())?;
+            Some(serde_json::json!({ "type": "tool", "name": name }))
+        }
+        _ => None,
+    }
+}
+
+const MAX_DECODED_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
+struct BinaryAttachment {
+    mime: String,
+    data: String,
+}
+
 fn content_to_anthropic_blocks(content: &serde_json::Value) -> serde_json::Value {
     match content {
         serde_json::Value::Array(parts) => {
-            let out: Vec<serde_json::Value> = parts
-                .iter()
-                .filter_map(|part| {
-                    let text = part
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .or_else(|| part.get("content").and_then(|t| t.as_str()))?;
-                    Some(serde_json::json!({"type": "text", "text": text}))
-                })
-                .collect();
+            let out: Vec<serde_json::Value> =
+                parts.iter().filter_map(openai_part_to_anthropic).collect();
             serde_json::Value::Array(out)
         }
         _ => serde_json::json!([{"type": "text", "text": content_to_text(content)}]),
     }
+}
+
+fn openai_part_to_anthropic(part: &serde_json::Value) -> Option<serde_json::Value> {
+    let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if let Some(text) = text_from_openai_part(part) {
+        if !matches!(part_type, "image_url" | "input_audio" | "file") {
+            return Some(serde_json::json!({ "type": "text", "text": text }));
+        }
+    }
+
+    if part_type == "input_audio" {
+        warn_dropped_content_part("anthropic", part_type, "audio is not supported");
+        return None;
+    }
+
+    let attachment = extract_binary_attachment(part, "anthropic")?;
+    let block_type = if attachment.mime.starts_with("image/") {
+        "image"
+    } else {
+        "document"
+    };
+    Some(serde_json::json!({
+        "type": block_type,
+        "source": {
+            "type": "base64",
+            "media_type": attachment.mime,
+            "data": attachment.data
+        }
+    }))
+}
+
+fn content_to_gemini_parts(content: &serde_json::Value) -> Vec<serde_json::Value> {
+    match content {
+        serde_json::Value::Array(parts) => parts.iter().filter_map(openai_part_to_gemini).collect(),
+        serde_json::Value::String(text) => vec![serde_json::json!({ "text": text })],
+        _ => {
+            let text = content_to_text(content);
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![serde_json::json!({ "text": text })]
+            }
+        }
+    }
+}
+
+fn openai_part_to_gemini(part: &serde_json::Value) -> Option<serde_json::Value> {
+    let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if let Some(text) = text_from_openai_part(part) {
+        if !matches!(part_type, "image_url" | "input_audio" | "file") {
+            return Some(serde_json::json!({ "text": text }));
+        }
+    }
+
+    let attachment = extract_binary_attachment(part, "gemini")?;
+    Some(serde_json::json!({
+        "inlineData": {
+            "mimeType": attachment.mime,
+            "data": attachment.data
+        }
+    }))
+}
+
+fn text_from_openai_part(part: &serde_json::Value) -> Option<&str> {
+    part.get("text")
+        .and_then(|t| t.as_str())
+        .or_else(|| part.get("content").and_then(|t| t.as_str()))
+}
+
+fn extract_binary_attachment(part: &serde_json::Value, provider: &str) -> Option<BinaryAttachment> {
+    let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match part_type {
+        "image_url" => {
+            let url = part
+                .get("image_url")
+                .and_then(|u| u.get("url"))
+                .and_then(|u| u.as_str())?;
+            let Some((mime, data)) = parse_data_uri(url, MAX_DECODED_ATTACHMENT_BYTES) else {
+                warn_dropped_content_part(
+                    provider,
+                    part_type,
+                    "image_url must be a base64 data URI",
+                );
+                return None;
+            };
+            Some(BinaryAttachment { mime, data })
+        }
+        "input_audio" => {
+            let audio = part.get("input_audio")?;
+            let data = audio.get("data").and_then(|d| d.as_str()).unwrap_or("");
+            let Some(data) = validate_base64_data(data, MAX_DECODED_ATTACHMENT_BYTES) else {
+                warn_dropped_content_part(provider, part_type, "invalid or oversized base64 data");
+                return None;
+            };
+            let format = audio
+                .get("format")
+                .and_then(|f| f.as_str())
+                .unwrap_or("wav");
+            Some(BinaryAttachment {
+                mime: mime_from_audio_format(format),
+                data,
+            })
+        }
+        "file" => {
+            let file = part.get("file")?;
+            let file_data = file.get("file_data").and_then(|d| d.as_str()).unwrap_or("");
+            let filename = file.get("filename").and_then(|f| f.as_str()).unwrap_or("");
+            if let Some((mime, data)) = parse_data_uri(file_data, MAX_DECODED_ATTACHMENT_BYTES) {
+                return Some(BinaryAttachment { mime, data });
+            }
+            let Some(data) = validate_base64_data(file_data, MAX_DECODED_ATTACHMENT_BYTES) else {
+                warn_dropped_content_part(provider, part_type, "invalid or oversized base64 data");
+                return None;
+            };
+            Some(BinaryAttachment {
+                mime: mime_from_filename(filename),
+                data,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_data_uri(uri: &str, max_bytes: usize) -> Option<(String, String)> {
+    let stripped = uri.strip_prefix("data:")?;
+    let (metadata, data) = stripped.split_once(',')?;
+    let mut parts = metadata.split(';');
+    let mime = parts.next()?.trim();
+    let is_base64 = parts.any(|part| part.eq_ignore_ascii_case("base64"));
+    if mime.is_empty() || !is_base64 {
+        return None;
+    }
+    let data = validate_base64_data(data, max_bytes)?;
+    Some((mime.to_string(), data))
+}
+
+fn validate_base64_data(data: &str, max_bytes: usize) -> Option<String> {
+    let compact: String = data.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    if compact.is_empty() || compact.len() > max_base64_len(max_bytes) {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .ok()?;
+    if decoded.len() > max_bytes {
+        return None;
+    }
+    Some(compact)
+}
+
+fn max_base64_len(decoded_bytes: usize) -> usize {
+    decoded_bytes.div_ceil(3) * 4
+}
+
+fn mime_from_audio_format(format: &str) -> String {
+    match format.trim_start_matches('.').to_ascii_lowercase().as_str() {
+        "mp3" => "audio/mpeg".to_string(),
+        "wav" => "audio/wav".to_string(),
+        "ogg" => "audio/ogg".to_string(),
+        "flac" => "audio/flac".to_string(),
+        "m4a" => "audio/mp4".to_string(),
+        other if !other.is_empty() => format!("audio/{other}"),
+        _ => "audio/wav".to_string(),
+    }
+}
+
+fn mime_from_filename(filename: &str) -> String {
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "pdf" => "application/pdf".to_string(),
+        "doc" => "application/msword".to_string(),
+        "docx" => {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".to_string()
+        }
+        "xls" => "application/vnd.ms-excel".to_string(),
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".to_string(),
+        "ppt" => "application/vnd.ms-powerpoint".to_string(),
+        "pptx" => {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".to_string()
+        }
+        "txt" => "text/plain".to_string(),
+        "csv" => "text/csv".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "json" => "application/json".to_string(),
+        "xml" => "application/xml".to_string(),
+        "zip" => "application/zip".to_string(),
+        "mp3" => "audio/mpeg".to_string(),
+        "mp4" => "video/mp4".to_string(),
+        "wav" => "audio/wav".to_string(),
+        "ogg" => "audio/ogg".to_string(),
+        "webm" => "video/webm".to_string(),
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "gif" => "image/gif".to_string(),
+        "webp" => "image/webp".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+fn warn_dropped_content_part(provider: &str, part_type: &str, reason: &str) {
+    tracing::warn!(
+        provider = provider,
+        part_type = part_type,
+        reason = reason,
+        "dropping content part during format conversion"
+    );
 }
 
 async fn transform_json_response(
@@ -688,6 +958,50 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_request_converts_tools_and_tool_choice() {
+        let body = Bytes::from_static(
+            br#"{"model":"claude-3","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup data","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}],"tool_choice":{"type":"function","function":{"name":"lookup"}}}"#,
+        );
+        let adapted = adapt_request(
+            UpstreamFormat::Anthropic,
+            &"/v1/chat/completions".parse().unwrap(),
+            &Method::POST,
+            &body,
+            "claude-3",
+            "sk-ant-test",
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&adapted.body).unwrap();
+        assert_eq!(v["tools"][0]["name"], "lookup");
+        assert_eq!(v["tools"][0]["description"], "Lookup data");
+        assert_eq!(v["tools"][0]["input_schema"]["type"], "object");
+        assert_eq!(v["tool_choice"]["type"], "tool");
+        assert_eq!(v["tool_choice"]["name"], "lookup");
+    }
+
+    #[test]
+    fn anthropic_request_converts_image_data_uri() {
+        let body = Bytes::from_static(
+            br#"{"model":"claude-3","messages":[{"role":"user","content":[{"type":"text","text":"look"},{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]}"#,
+        );
+        let adapted = adapt_request(
+            UpstreamFormat::Anthropic,
+            &"/v1/chat/completions".parse().unwrap(),
+            &Method::POST,
+            &body,
+            "claude-3",
+            "sk-ant-test",
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&adapted.body).unwrap();
+        let content = &v["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "aGVsbG8=");
+    }
+
+    #[test]
     fn gemini_request_uses_generate_content_path() {
         let body = Bytes::from_static(
             br#"{"model":"gemini-1.5-pro","messages":[{"role":"user","content":"hi"}],"stream":false}"#,
@@ -707,5 +1021,26 @@ mod tests {
             .starts_with("/v1beta/models/gemini-1.5-pro:generateContent?key="));
         let v: serde_json::Value = serde_json::from_slice(&adapted.body).unwrap();
         assert_eq!(v["contents"][0]["role"], "user");
+    }
+
+    #[test]
+    fn gemini_request_converts_input_audio_part() {
+        let body = Bytes::from_static(
+            br#"{"model":"gemini-1.5-pro","messages":[{"role":"user","content":[{"type":"text","text":"transcribe"},{"type":"input_audio","input_audio":{"format":"mp3","data":"aGVsbG8="}}]}],"stream":false}"#,
+        );
+        let adapted = adapt_request(
+            UpstreamFormat::Gemini,
+            &"/v1/chat/completions".parse().unwrap(),
+            &Method::POST,
+            &body,
+            "gemini-1.5-pro",
+            "AIza test",
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&adapted.body).unwrap();
+        let parts = &v["contents"][0]["parts"];
+        assert_eq!(parts[0]["text"], "transcribe");
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "audio/mpeg");
+        assert_eq!(parts[1]["inlineData"]["data"], "aGVsbG8=");
     }
 }
