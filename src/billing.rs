@@ -17,6 +17,12 @@ pub enum ReserveResult {
     Missing,
 }
 
+pub enum AdjustResult {
+    Updated(i64),
+    Missing,
+    NegativeBalance,
+}
+
 enum PersistUpdate {
     Set { key: String, balance: i64 },
 }
@@ -73,6 +79,9 @@ impl BillingStore {
     }
 
     pub fn create_key(&self, key: String, balance: i64) -> anyhow::Result<bool> {
+        if balance < 0 {
+            anyhow::bail!("balance must be non-negative");
+        }
         let mut map = self
             .balances
             .write()
@@ -91,7 +100,36 @@ impl BillingStore {
         map.get(key).map(|v| v.load(Ordering::Relaxed))
     }
 
-    pub fn adjust_balance(&self, key: &str, delta: i64) -> Option<i64> {
+    pub fn adjust_balance(&self, key: &str, delta: i64) -> AdjustResult {
+        let map = match self.balances.read() {
+            Ok(map) => map,
+            Err(_) => return AdjustResult::Missing,
+        };
+        let Some(balance) = map.get(key).cloned() else {
+            return AdjustResult::Missing;
+        };
+        drop(map);
+
+        let mut cur = balance.load(Ordering::Relaxed);
+        loop {
+            let new_balance = cur.saturating_add(delta);
+            if new_balance < 0 {
+                return AdjustResult::NegativeBalance;
+            }
+            match balance.compare_exchange(cur, new_balance, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => {
+                    let _ = self.persist_tx.send(PersistUpdate::Set {
+                        key: key.to_string(),
+                        balance: new_balance,
+                    });
+                    return AdjustResult::Updated(new_balance);
+                }
+                Err(v) => cur = v,
+            }
+        }
+    }
+
+    fn adjust_balance_unchecked(&self, key: &str, delta: i64) -> Option<i64> {
         let map = self.balances.read().ok()?;
         let balance = map.get(key)?.clone();
         drop(map);
@@ -141,7 +179,7 @@ impl BillingStore {
     }
 
     pub fn release_reservation(&self, key: &str) -> Option<i64> {
-        self.adjust_balance(key, 1)
+        self.adjust_balance_unchecked(key, 1)
     }
 
     pub fn settle_reserved_usage(&self, key: &str, total_tokens: u64) -> Option<i64> {
@@ -150,7 +188,7 @@ impl BillingStore {
         if adjustment == 0 {
             return self.get_balance(key);
         }
-        self.adjust_balance(key, adjustment)
+        self.adjust_balance_unchecked(key, adjustment)
     }
 }
 
