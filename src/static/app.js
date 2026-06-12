@@ -375,8 +375,11 @@
     tr.className = 'clickable';
     const status = r.status || 0;
     const statusClass = status >= 200 && status < 300 ? 'ok' : (status === 404 || status === 0 ? 'muted' : 'bad');
+    const hasThought = (r.thought_tokens || 0) > 0;
     const tokens = r.total_tokens != null
-      ? `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.total_tokens}`
+      ? (hasThought
+        ? `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.thought_tokens || 0}/${r.total_tokens}`
+        : `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.total_tokens}`)
       : '-';
     const bytes = `${r.req_bytes || 0}/${r.resp_bytes || 0}`;
     tr.innerHTML = `

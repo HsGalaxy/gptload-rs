@@ -964,6 +964,7 @@ impl RequestLogContext {
 struct UsageTokens {
     prompt: u64,
     completion: u64,
+    thought: u64,
     total: u64,
 }
 
@@ -989,6 +990,7 @@ fn record_request(
         resp_bytes,
         prompt_tokens: usage.map(|u| u.prompt),
         completion_tokens: usage.map(|u| u.completion),
+        thought_tokens: usage.map(|u| u.thought),
         total_tokens: usage.map(|u| u.total),
         request_headers: ctx.request_headers.clone(),
         request_body: ctx.request_body.clone(),
@@ -999,6 +1001,24 @@ fn record_request(
             attempts: 0,
         },
     };
+    if let Some(usage) = usage {
+        state
+            .stats
+            .prompt_tokens_total
+            .fetch_add(usage.prompt, Ordering::Relaxed);
+        state
+            .stats
+            .completion_tokens_total
+            .fetch_add(usage.completion, Ordering::Relaxed);
+        state
+            .stats
+            .thought_tokens_total
+            .fetch_add(usage.thought, Ordering::Relaxed);
+        state
+            .stats
+            .tokens_total
+            .fetch_add(usage.total, Ordering::Relaxed);
+    }
     state.record_request(entry);
 }
 
@@ -1360,6 +1380,15 @@ fn extract_usage_from_value(v: &serde_json::Value) -> Option<UsageTokens> {
     let usage = v.get("usage")?;
     let prompt = usage.get("prompt_tokens").and_then(|v| v.as_u64());
     let completion = usage.get("completion_tokens").and_then(|v| v.as_u64());
+    let thought = usage
+        .get("thought_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            usage
+                .get("completion_tokens_details")
+                .and_then(|v| v.get("reasoning_tokens"))
+                .and_then(|v| v.as_u64())
+        });
     let total = usage
         .get("total_tokens")
         .and_then(|v| v.as_u64())
@@ -1368,13 +1397,14 @@ fn extract_usage_from_value(v: &serde_json::Value) -> Option<UsageTokens> {
             _ => None,
         });
 
-    if prompt.is_none() && completion.is_none() && total.is_none() {
+    if prompt.is_none() && completion.is_none() && thought.is_none() && total.is_none() {
         return None;
     }
 
     Some(UsageTokens {
         prompt: prompt.unwrap_or(0),
         completion: completion.unwrap_or(0),
+        thought: thought.unwrap_or(0),
         total: total.unwrap_or(0),
     })
 }
@@ -1462,5 +1492,45 @@ mod tests {
     fn retry_after_past_date_is_zero() {
         let value = HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT");
         assert_eq!(parse_retry_after_ms(Some(&value)), Some(0));
+    }
+
+    #[test]
+    fn usage_parser_reads_thought_tokens() {
+        let value = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 7,
+                "thought_tokens": 3,
+                "total_tokens": 17
+            }
+        });
+
+        let usage = extract_usage_from_value(&value).unwrap();
+
+        assert_eq!(usage.prompt, 10);
+        assert_eq!(usage.completion, 7);
+        assert_eq!(usage.thought, 3);
+        assert_eq!(usage.total, 17);
+    }
+
+    #[test]
+    fn usage_parser_reads_reasoning_tokens_details() {
+        let value = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 7,
+                "total_tokens": 17,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 3
+                }
+            }
+        });
+
+        let usage = extract_usage_from_value(&value).unwrap();
+
+        assert_eq!(usage.prompt, 10);
+        assert_eq!(usage.completion, 7);
+        assert_eq!(usage.thought, 3);
+        assert_eq!(usage.total, 17);
     }
 }

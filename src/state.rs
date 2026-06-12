@@ -187,6 +187,11 @@ pub struct Stats {
     pub errors_timeout: AtomicU64,
     pub errors_network: AtomicU64,
 
+    pub prompt_tokens_total: AtomicU64,
+    pub completion_tokens_total: AtomicU64,
+    pub thought_tokens_total: AtomicU64,
+    pub tokens_total: AtomicU64,
+
     pub queue_depth: AtomicU64,
     pub queue_timeout_total: AtomicU64,
 
@@ -233,6 +238,10 @@ impl Stats {
             responses_5xx: AtomicU64::new(0),
             errors_timeout: AtomicU64::new(0),
             errors_network: AtomicU64::new(0),
+            prompt_tokens_total: AtomicU64::new(0),
+            completion_tokens_total: AtomicU64::new(0),
+            thought_tokens_total: AtomicU64::new(0),
+            tokens_total: AtomicU64::new(0),
             queue_depth: AtomicU64::new(0),
             queue_timeout_total: AtomicU64::new(0),
             latency_ns_total: AtomicU64::new(0),
@@ -257,6 +266,7 @@ pub struct RequestLogEntry {
     pub resp_bytes: usize,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    pub thought_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub request_headers: Option<BTreeMap<String, String>>,
     pub request_body: Option<String>,

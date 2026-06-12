@@ -721,6 +721,10 @@ struct StatsSnapshot {
 
     errors_timeout: u64,
     errors_network: u64,
+    prompt_tokens_total: u64,
+    completion_tokens_total: u64,
+    thought_tokens_total: u64,
+    tokens_total: u64,
     queue_depth: u64,
     queue_timeout_total: u64,
     queue_enabled: bool,
@@ -806,6 +810,22 @@ fn build_snapshot(state: &RouterState) -> StatsSnapshot {
         errors_network: state
             .stats
             .errors_network
+            .load(std::sync::atomic::Ordering::Relaxed),
+        prompt_tokens_total: state
+            .stats
+            .prompt_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        completion_tokens_total: state
+            .stats
+            .completion_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        thought_tokens_total: state
+            .stats
+            .thought_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed),
+        tokens_total: state
+            .stats
+            .tokens_total
             .load(std::sync::atomic::Ordering::Relaxed),
         queue_depth: state
             .stats
@@ -981,6 +1001,41 @@ pub async fn prometheus_metrics(state: Arc<RouterState>) -> Response<Body> {
         state
             .stats
             .errors_network
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+
+    let _ = writeln!(buf, "# HELP gptload_tokens_total Total observed tokens");
+    let _ = writeln!(buf, "# TYPE gptload_tokens_total counter");
+    let _ = writeln!(
+        buf,
+        "gptload_tokens_total{{type=\"prompt\"}} {}",
+        state
+            .stats
+            .prompt_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        buf,
+        "gptload_tokens_total{{type=\"completion\"}} {}",
+        state
+            .stats
+            .completion_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        buf,
+        "gptload_tokens_total{{type=\"thought\"}} {}",
+        state
+            .stats
+            .thought_tokens_total
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let _ = writeln!(
+        buf,
+        "gptload_tokens_total{{type=\"total\"}} {}",
+        state
+            .stats
+            .tokens_total
             .load(std::sync::atomic::Ordering::Relaxed)
     );
 
