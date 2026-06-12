@@ -651,7 +651,7 @@
     .control-row select { width: auto; max-width: 240px; }
 
     .token-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; }
-    .billing-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .billing-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(86px, 1fr)); gap: 8px; }
 
     .segmented { display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--panel-soft); }
     .segmented label {
@@ -1180,7 +1180,9 @@
               <div class="billing-actions">
                 <button class="btn primary" id="billingCreate">创建</button>
                 <button class="btn" id="billingQuery">查询</button>
+                <button class="btn" id="billingList">列表</button>
                 <button class="btn" id="billingGenerate">生成</button>
+                <button class="btn danger" id="billingDelete">删除</button>
               </div>
               <button class="btn" id="billingAdjust">变更余额</button>
               <pre id="billingResult" class="pre-box small"></pre>

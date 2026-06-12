@@ -25,6 +25,7 @@ pub enum AdjustResult {
 
 enum PersistUpdate {
     Set { key: String, balance: i64 },
+    Delete { key: String },
 }
 
 impl BillingStore {
@@ -55,6 +56,11 @@ impl BillingStore {
                     Ok(msg) => match msg {
                         PersistUpdate::Set { key, balance } => {
                             pending.insert(key, balance);
+                        }
+                        PersistUpdate::Delete { key } => {
+                            pending.remove(&key);
+                            let _ = persist_tree.remove(key.as_bytes());
+                            let _ = persist_tree.flush();
                         }
                     },
                     Err(RecvTimeoutError::Timeout) => {}
@@ -95,9 +101,37 @@ impl BillingStore {
         Ok(true)
     }
 
+    pub fn delete_key(&self, key: &str) -> anyhow::Result<bool> {
+        let mut map = self
+            .balances
+            .write()
+            .map_err(|_| anyhow::anyhow!("billing balances lock poisoned"))?;
+        if map.remove(key).is_none() {
+            return Ok(false);
+        }
+        drop(map);
+        let _ = self.persist_tx.send(PersistUpdate::Delete {
+            key: key.to_string(),
+        });
+        Ok(true)
+    }
+
     pub fn get_balance(&self, key: &str) -> Option<i64> {
         let map = self.balances.read().ok()?;
         map.get(key).map(|v| v.load(Ordering::Relaxed))
+    }
+
+    pub fn list_keys(&self) -> Vec<(String, i64)> {
+        let map = match self.balances.read() {
+            Ok(map) => map,
+            Err(_) => return Vec::new(),
+        };
+        let mut keys: Vec<(String, i64)> = map
+            .iter()
+            .map(|(key, balance)| (key.clone(), balance.load(Ordering::Relaxed)))
+            .collect();
+        keys.sort_by(|a, b| a.0.cmp(&b.0));
+        keys
     }
 
     pub fn adjust_balance(&self, key: &str, delta: i64) -> AdjustResult {

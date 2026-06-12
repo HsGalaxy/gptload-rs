@@ -130,6 +130,7 @@ async fn handle_api(req: Request<Body>, state: Arc<RouterState>) -> Response<Bod
         (&Method::GET, "/admin/api/v1/requests/stream") => requests_stream(state).await,
         (&Method::GET, "/admin/api/v1/requests") => api_requests(state, req.uri()).await,
         (&Method::GET, "/admin/api/v1/metrics") => api_metrics(state, req.uri()).await,
+        (&Method::GET, "/admin/api/v1/billing/keys") => api_billing_list_keys(state).await,
         (&Method::POST, "/admin/api/v1/billing/keys") => api_billing_create_key(req, state).await,
         _ => {
             // Dynamic routes:
@@ -169,6 +170,7 @@ async fn handle_billing_key_subroutes(
     if action.is_empty() {
         return match *req.method() {
             Method::GET => api_billing_get_balance(state, key).await,
+            Method::DELETE => api_billing_delete_key(state, key).await,
             _ => Response::builder()
                 .status(405)
                 .header("content-type", "application/json")
@@ -251,6 +253,20 @@ async fn api_billing_create_key(req: Request<Body>, state: Arc<RouterState>) -> 
     }))
 }
 
+async fn api_billing_list_keys(state: Arc<RouterState>) -> Response<Body> {
+    let keys: Vec<_> = state
+        .billing
+        .list_keys()
+        .into_iter()
+        .map(|(key, balance)| serde_json::json!({ "key": key, "balance": balance }))
+        .collect();
+    let count = keys.len();
+    json_ok(&serde_json::json!({
+        "keys": keys,
+        "count": count
+    }))
+}
+
 async fn api_billing_get_balance(state: Arc<RouterState>, key: &str) -> Response<Body> {
     match state.billing.get_balance(key) {
         Some(balance) => json_ok(&serde_json::json!({
@@ -261,6 +277,25 @@ async fn api_billing_get_balance(state: Arc<RouterState>, key: &str) -> Response
             http::StatusCode::NOT_FOUND,
             "key not found",
             "key_not_found",
+        ),
+    }
+}
+
+async fn api_billing_delete_key(state: Arc<RouterState>, key: &str) -> Response<Body> {
+    match state.billing.delete_key(key) {
+        Ok(true) => json_ok(&serde_json::json!({
+            "key": key,
+            "deleted": true
+        })),
+        Ok(false) => RouterState::json_error(
+            http::StatusCode::NOT_FOUND,
+            "key not found",
+            "key_not_found",
+        ),
+        Err(e) => RouterState::json_error(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("delete key failed: {e}"),
+            "billing_error",
         ),
     }
 }

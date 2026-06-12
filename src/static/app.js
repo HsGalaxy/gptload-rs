@@ -46,6 +46,8 @@
   const billingCreateBtn = document.getElementById('billingCreate');
   const billingQueryBtn = document.getElementById('billingQuery');
   const billingAdjustBtn = document.getElementById('billingAdjust');
+  const billingListBtn = document.getElementById('billingList');
+  const billingDeleteBtn = document.getElementById('billingDelete');
   const billingGenerateBtn = document.getElementById('billingGenerate');
   const billingResult = document.getElementById('billingResult');
 
@@ -541,6 +543,35 @@
       if (!key) return alert('请输入 key');
       billingResult.textContent = '查询中...';
       const { res, json, text } = await apiFetch(`/admin/api/v1/billing/keys/${encodeURIComponent(key)}`);
+      if (!res.ok) {
+        billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
+        return;
+      }
+      billingResult.textContent = JSON.stringify(json || {}, null, 2);
+    };
+  }
+
+  if (billingListBtn) {
+    billingListBtn.onclick = async () => {
+      billingResult.textContent = '查询中...';
+      const { res, json, text } = await apiFetch('/admin/api/v1/billing/keys');
+      if (!res.ok) {
+        billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
+        return;
+      }
+      billingResult.textContent = JSON.stringify(json || {}, null, 2);
+    };
+  }
+
+  if (billingDeleteBtn) {
+    billingDeleteBtn.onclick = async () => {
+      const key = (billingKeyInput.value || '').trim();
+      if (!key) return alert('请输入 key');
+      if (!confirm(`删除计费 key ${key}？`)) return;
+      billingResult.textContent = '删除中...';
+      const { res, json, text } = await apiFetch(`/admin/api/v1/billing/keys/${encodeURIComponent(key)}`, {
+        method: 'DELETE'
+      });
       if (!res.ok) {
         billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
         return;
