@@ -730,12 +730,26 @@ fn gemini_json_to_openai(v: &serde_json::Value, model: Option<String>) -> serde_
         .and_then(|u| u.get("promptTokenCount"))
         .and_then(|n| n.as_u64())
         .unwrap_or(0);
-    let completion = v
+    let candidates = v
         .get("usageMetadata")
         .and_then(|u| u.get("candidatesTokenCount"))
         .and_then(|n| n.as_u64())
         .unwrap_or(0);
-    chat_completion_json("chatcmpl-gemini", &model, content, prompt, completion)
+    let thought = v
+        .get("usageMetadata")
+        .and_then(|u| u.get("thoughtsTokenCount"))
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0);
+    let completion = candidates.saturating_add(thought);
+    let total = v
+        .get("usageMetadata")
+        .and_then(|u| u.get("totalTokenCount"))
+        .and_then(|n| n.as_u64())
+        .unwrap_or(prompt.saturating_add(completion));
+    let mut resp = chat_completion_json("chatcmpl-gemini", &model, content, prompt, completion);
+    resp["usage"]["thought_tokens"] = serde_json::json!(thought);
+    resp["usage"]["total_tokens"] = serde_json::json!(total);
+    resp
 }
 
 fn chat_completion_json(
@@ -869,10 +883,19 @@ fn gemini_sse_to_openai(v: &serde_json::Value, model: Option<&str>) -> Vec<serde
             .get("promptTokenCount")
             .and_then(|n| n.as_u64())
             .unwrap_or(0);
-        let completion = usage
+        let candidates = usage
             .get("candidatesTokenCount")
             .and_then(|n| n.as_u64())
             .unwrap_or(0);
+        let thought = usage
+            .get("thoughtsTokenCount")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        let completion = candidates.saturating_add(thought);
+        let total = usage
+            .get("totalTokenCount")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(prompt.saturating_add(completion));
         out.push(chat_chunk_json(
             "chatcmpl-gemini",
             model.unwrap_or(""),
@@ -881,7 +904,8 @@ fn gemini_sse_to_openai(v: &serde_json::Value, model: Option<&str>) -> Vec<serde
             Some(serde_json::json!({
                 "prompt_tokens": prompt,
                 "completion_tokens": completion,
-                "total_tokens": prompt + completion
+                "thought_tokens": thought,
+                "total_tokens": total
             })),
         ));
     }
@@ -1042,5 +1066,51 @@ mod tests {
         assert_eq!(parts[0]["text"], "transcribe");
         assert_eq!(parts[1]["inlineData"]["mimeType"], "audio/mpeg");
         assert_eq!(parts[1]["inlineData"]["data"], "aGVsbG8=");
+    }
+
+    #[test]
+    fn gemini_json_usage_includes_thought_tokens() {
+        let gemini_resp = serde_json::json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{"text": "hello"}],
+                    "role": "model"
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 15,
+                "candidatesTokenCount": 25,
+                "thoughtsTokenCount": 5,
+                "totalTokenCount": 45
+            }
+        });
+
+        let converted = gemini_json_to_openai(&gemini_resp, Some("gemini-2.0-flash".to_string()));
+
+        assert_eq!(converted["usage"]["prompt_tokens"], 15);
+        assert_eq!(converted["usage"]["completion_tokens"], 30);
+        assert_eq!(converted["usage"]["thought_tokens"], 5);
+        assert_eq!(converted["usage"]["total_tokens"], 45);
+    }
+
+    #[test]
+    fn gemini_sse_usage_includes_thought_tokens() {
+        let gemini_chunk = serde_json::json!({
+            "usageMetadata": {
+                "promptTokenCount": 8,
+                "candidatesTokenCount": 11,
+                "thoughtsTokenCount": 3,
+                "totalTokenCount": 22
+            }
+        });
+
+        let chunks = gemini_sse_to_openai(&gemini_chunk, Some("gemini-2.0-flash"));
+        let usage = &chunks[0]["usage"];
+
+        assert_eq!(usage["prompt_tokens"], 8);
+        assert_eq!(usage["completion_tokens"], 14);
+        assert_eq!(usage["thought_tokens"], 3);
+        assert_eq!(usage["total_tokens"], 22);
     }
 }
