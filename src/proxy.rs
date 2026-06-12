@@ -73,6 +73,25 @@ impl Drop for RequestLifecycle {
     }
 }
 
+struct KeyRequestGuard {
+    state: Arc<RouterState>,
+    key: Arc<crate::state::KeyState>,
+}
+
+impl KeyRequestGuard {
+    fn new(state: Arc<RouterState>, key: Arc<crate::state::KeyState>) -> Self {
+        key.active_requests.fetch_add(1, Ordering::Relaxed);
+        Self { state, key }
+    }
+}
+
+impl Drop for KeyRequestGuard {
+    fn drop(&mut self) {
+        self.key.active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.state.notify_capacity();
+    }
+}
+
 pub async fn serve_http<F>(
     addr: SocketAddr,
     state: Arc<RouterState>,
@@ -722,10 +741,7 @@ async fn forward(
         log_ctx.upstream_id = Some(sel.upstream.id.to_string());
         let upstream = &sel.upstream;
 
-        // Track per-key concurrency for this attempt.
-        sel.key
-            .active_requests
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key_guard = KeyRequestGuard::new(state.clone(), sel.key.clone());
 
         let result = execute_attempt(
             &state,
@@ -744,12 +760,7 @@ async fn forward(
             &mut lifecycle,
         )
         .await;
-
-        // Decrement per-key concurrency after each attempt.
-        sel.key
-            .active_requests
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        state.notify_capacity();
+        drop(key_guard);
 
         match result {
             AttemptResult::Success(resp) => return resp,
