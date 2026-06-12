@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use crate::config::UpstreamFormat;
 use bytes::Bytes;
 use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE};
@@ -311,16 +313,16 @@ async fn transform_json_response(
     f: fn(&serde_json::Value, Option<String>) -> serde_json::Value,
 ) -> Response<Body> {
     let (mut parts, body) = up_resp.into_parts();
-    parts.headers.remove(CONTENT_LENGTH);
-    parts.headers.remove(CONTENT_ENCODING);
-    parts.headers.insert(
-        CONTENT_TYPE,
-        http::HeaderValue::from_static("application/json"),
-    );
     let body = match hyper::body::to_bytes(body).await {
         Ok(body) => body,
         Err(_) => {
             parts.status = http::StatusCode::BAD_GATEWAY;
+            parts.headers.remove(CONTENT_LENGTH);
+            parts.headers.remove(CONTENT_ENCODING);
+            parts.headers.insert(
+                CONTENT_TYPE,
+                http::HeaderValue::from_static("application/json"),
+            );
             return Response::from_parts(
                 parts,
                 Body::from(r#"{"error":{"message":"failed to read upstream response"}}"#),
@@ -330,6 +332,12 @@ async fn transform_json_response(
     if !parts.status.is_success() {
         return Response::from_parts(parts, Body::from(body));
     }
+    parts.headers.remove(CONTENT_LENGTH);
+    parts.headers.remove(CONTENT_ENCODING);
+    parts.headers.insert(
+        CONTENT_TYPE,
+        http::HeaderValue::from_static("application/json"),
+    );
     let value: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(_) => return Response::from_parts(parts, Body::from(body)),
@@ -344,6 +352,9 @@ fn transform_sse_response(
     f: fn(&serde_json::Value, Option<&str>) -> Vec<serde_json::Value>,
 ) -> Response<Body> {
     let (mut parts, body) = up_resp.into_parts();
+    if !parts.status.is_success() {
+        return Response::from_parts(parts, body);
+    }
     parts.headers.remove(CONTENT_LENGTH);
     parts.headers.remove(CONTENT_ENCODING);
     parts.headers.insert(
