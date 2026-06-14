@@ -202,7 +202,8 @@
       const tr = document.createElement('tr');
       const active = u.keys_active != null ? u.keys_active : u.keys_total;
       const invalid = u.keys_invalid || 0;
-      const keysClass = invalid > 0 ? 'bad' : 'ok';
+      const cooldown = u.keys_cooldown || 0;
+      const keysClass = invalid > 0 ? 'bad' : (cooldown > 0 ? 'warn' : 'ok');
       tr.innerHTML = `
         <td class="mono cell-truncate" title="${escapeHtml(u.id)}">${escapeHtml(u.id)}</td>
         <td class="mono small cell-truncate cell-url" title="${escapeHtml(u.base_url)}">${escapeHtml(u.base_url)}</td>
@@ -210,7 +211,7 @@
         <td class="mono small cell-truncate" title="${escapeHtml(u.proxy || '-')}">${escapeHtml(u.proxy || '-')}</td>
         <td class="mono small">${u.min_key_level != null ? u.min_key_level : 0}</td>
         <td><div class="slider-cell"><input type="range" min="1" max="100" value="${u.weight}" data-upstream="${escapeHtml(u.id)}" class="weightSlider" aria-label="weight ${escapeHtml(u.id)}" /> <span class="mono small">${u.weight}</span></div></td>
-        <td class="${keysClass}">${active}/${invalid}</td>
+        <td class="${keysClass}">${active}/${invalid}/${cooldown}</td>
         <td class="mono small">${u.selected_total || 0}</td>
         <td class="mono small">${u.responses_2xx || 0}</td>
         <td class="mono small">${u.responses_4xx || 0}</td>

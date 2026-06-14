@@ -804,6 +804,7 @@ struct UpstreamInfo {
     keys_total: usize,
     keys_active: usize,
     keys_invalid: usize,
+    keys_cooldown: usize,
 
     selected_total: u64,
 
@@ -819,6 +820,16 @@ fn build_upstream_info(u: &crate::state::Upstream, global_max: u32) -> UpstreamI
     let keys_arc = u.keys.load_full();
     let total = keys_arc.len();
     let invalid = keys_arc.iter().filter(|k| !k.is_active()).count();
+    let now = now_ms();
+    let cooldown = keys_arc
+        .iter()
+        .filter(|k| {
+            let until = k
+                .cooldown_until_ms
+                .load(std::sync::atomic::Ordering::Relaxed);
+            k.is_active() && until > 0 && now < until
+        })
+        .count();
     let effective_max = if u.max_concurrent_per_key > 0 {
         u.max_concurrent_per_key
     } else {
@@ -840,6 +851,7 @@ fn build_upstream_info(u: &crate::state::Upstream, global_max: u32) -> UpstreamI
         keys_total: total,
         keys_active: total.saturating_sub(invalid),
         keys_invalid: invalid,
+        keys_cooldown: cooldown,
         selected_total: u
             .stats
             .selected_total
