@@ -526,6 +526,8 @@ struct UpstreamBody {
     max_concurrent_per_key: Option<u32>,
     format: Option<UpstreamFormat>,
     proxy: Option<String>,
+    #[serde(default)]
+    model_map: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -535,6 +537,8 @@ struct UpstreamUpdateBody {
     max_concurrent_per_key: Option<u32>,
     format: Option<UpstreamFormat>,
     proxy: Option<String>,
+    #[serde(default)]
+    model_map: BTreeMap<String, String>,
 }
 
 fn validate_upstream_limits(
@@ -583,6 +587,7 @@ async fn api_add_upstream(req: Request<Body>, state: Arc<RouterState>) -> Respon
         max_concurrent_per_key: input.max_concurrent_per_key,
         format: input.format,
         proxy: input.proxy.filter(|p| !p.trim().is_empty()),
+        model_map: input.model_map,
     };
     let state2 = state.clone();
     let res = tokio::task::spawn_blocking(move || state2.add_upstream(cfg)).await;
@@ -630,6 +635,7 @@ async fn api_update_upstream(
         max_concurrent_per_key: input.max_concurrent_per_key,
         format: input.format,
         proxy: input.proxy.filter(|p| !p.trim().is_empty()),
+        model_map: input.model_map,
     };
     let res = tokio::task::spawn_blocking(move || state2.update_upstream(&id, cfg)).await;
     match res {
@@ -677,6 +683,7 @@ struct UpstreamInfo {
     proxy: Option<String>,
     weight: usize,
     max_concurrent_per_key: u32,
+    model_map: BTreeMap<String, String>,
     keys_total: usize,
     keys_active: usize,
     keys_invalid: usize,
@@ -707,6 +714,11 @@ fn build_upstream_info(u: &crate::state::Upstream, global_max: u32) -> UpstreamI
         proxy: u.proxy.clone(),
         weight: u.weight,
         max_concurrent_per_key: effective_max,
+        model_map: u
+            .model_map
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         keys_total: total,
         keys_active: total.saturating_sub(invalid),
         keys_invalid: invalid,

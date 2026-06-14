@@ -146,6 +146,7 @@ pub struct Upstream {
     pub keys_update_lock: Mutex<()>,
     pub key_rr: AtomicUsize,
     pub models: ArcSwap<AHashSet<String>>,
+    pub model_map: AHashMap<String, String>,
 
     pub stats: UpstreamStats,
 }
@@ -766,7 +767,7 @@ impl RouterState {
             let u_idx = snap.schedule[rr % sched_len];
             let u = &snap.upstreams[u_idx];
 
-            if !u.models.load().contains(model) {
+            if !u.models.load().contains(model) && !u.model_map.contains_key(model) {
                 continue;
             }
 
@@ -798,7 +799,7 @@ impl RouterState {
         let snap = self.snapshot.load_full();
         snap.upstreams
             .iter()
-            .any(|u| u.models.load().contains(model))
+            .any(|u| u.models.load().contains(model) || u.model_map.contains_key(model))
     }
 
     pub fn any_models_loaded(&self) -> bool {
@@ -1329,6 +1330,11 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
     } else {
         base_path
     };
+    let model_map = u
+        .model_map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let upstream = Upstream {
         id: Arc::<str>::from(u.id),
@@ -1346,6 +1352,7 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
         keys_update_lock: Mutex::new(()),
         key_rr: AtomicUsize::new(0),
         models: ArcSwap::from_pointee(AHashSet::new()),
+        model_map,
         stats: UpstreamStats::default(),
     };
 
@@ -1654,6 +1661,11 @@ impl RouterState {
                 },
                 format: Some(u.format),
                 proxy: u.proxy.clone(),
+                model_map: u
+                    .model_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
             })
             .collect()
     }

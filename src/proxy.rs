@@ -376,12 +376,23 @@ async fn execute_attempt(
     let attempt_start = Instant::now();
 
     let model = log_ctx.model.as_deref().unwrap_or_default();
+    let upstream_model = upstream
+        .model_map
+        .get(model)
+        .map(String::as_str)
+        .unwrap_or(model);
+    let mapped_body = if upstream_model != model {
+        rewrite_request_model(body_bytes, upstream_model)
+    } else {
+        None
+    };
+    let body_for_attempt = mapped_body.as_ref().unwrap_or(body_bytes);
     let adapted = match format::adapt_request(
         upstream.format,
         original_pq,
         out_method,
-        body_bytes,
-        model,
+        body_for_attempt,
+        upstream_model,
         sel.key.key.as_ref(),
     ) {
         Ok(adapted) => adapted,
@@ -1326,7 +1337,11 @@ fn extract_api_key(headers: &hyper::HeaderMap) -> Option<String> {
 fn models_list(state: &RouterState) -> (Response<Body>, usize) {
     let routes = state.get_model_routes();
     let mut models: Vec<String> = routes.models.keys().cloned().collect();
+    for upstream in state.snapshot.load_full().upstreams.iter() {
+        models.extend(upstream.model_map.keys().cloned());
+    }
     models.sort();
+    models.dedup();
 
     let data: Vec<serde_json::Value> = models
         .iter()
@@ -1368,6 +1383,16 @@ fn parse_request_json(
         return None;
     }
     serde_json::from_slice(body).ok()
+}
+
+fn rewrite_request_model(body: &bytes::Bytes, model: &str) -> Option<bytes::Bytes> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object_mut()?;
+    if !object.contains_key("model") {
+        return None;
+    }
+    object.insert("model".to_string(), serde_json::json!(model));
+    serde_json::to_vec(&value).ok().map(bytes::Bytes::from)
 }
 
 fn ensure_stream_usage(v: &mut serde_json::Value) -> bool {
@@ -1559,5 +1584,18 @@ mod tests {
         assert_eq!(usage.completion, 7);
         assert_eq!(usage.thought, 3);
         assert_eq!(usage.total, 17);
+    }
+
+    #[test]
+    fn rewrite_request_model_updates_top_level_model() {
+        let body = bytes::Bytes::from_static(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+
+        let rewritten = rewrite_request_model(&body, "upstream-model").unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
+
+        assert_eq!(value["model"], "upstream-model");
+        assert_eq!(value["messages"][0]["content"], "hi");
     }
 }

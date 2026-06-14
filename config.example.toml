@@ -81,6 +81,8 @@ format = "openai"
 # Per-upstream override for max concurrent requests per key.
 # Overrides the global [key].max_concurrent_per_key default.
 # max_concurrent_per_key = 5
+# Optional incoming model -> upstream model aliases.
+# model_map = { "gpt-4o-mini" = "vendor-small-model" }
 
 # Example: second upstream (OpenAI-compatible) weighted 2x
 [[upstreams]]

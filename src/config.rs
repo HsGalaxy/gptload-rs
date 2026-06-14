@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -183,6 +184,10 @@ pub struct UpstreamConfig {
     /// Optional outbound proxy URL: http://..., https://..., socks5://...
     #[serde(default)]
     pub proxy: Option<String>,
+
+    /// Incoming model name to upstream model name mapping.
+    #[serde(default)]
+    pub model_map: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -245,6 +250,15 @@ impl Config {
             if u.format.is_none() {
                 u.format = Some(UpstreamFormat::detect(&u.base_url));
             }
+            let mut model_map = BTreeMap::new();
+            for (from, to) in std::mem::take(&mut u.model_map) {
+                let from = from.trim().to_string();
+                let to = to.trim().to_string();
+                if !from.is_empty() && !to.is_empty() {
+                    model_map.insert(from, to);
+                }
+            }
+            u.model_map = model_map;
         }
         Ok(())
     }
