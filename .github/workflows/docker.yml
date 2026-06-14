@@ -54,7 +54,7 @@ jobs:
       - name: Build Optimized Binary
         run: |
           export RUSTFLAGS="${{ matrix.rustflags }} -C codegen-units=1 -C llvm-args=-inline-threshold=500"
-          cross build --release --target ${{ matrix.target }}
+          cross build --release --locked --target ${{ matrix.target }} --features vendored-openssl
 
       - name: Prepare Binary
         run: |
