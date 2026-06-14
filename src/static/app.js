@@ -46,6 +46,7 @@
   const billingCreateBtn = document.getElementById('billingCreate');
   const billingQueryBtn = document.getElementById('billingQuery');
   const billingAdjustBtn = document.getElementById('billingAdjust');
+  const billingOverviewBtn = document.getElementById('billingOverview');
   const billingListBtn = document.getElementById('billingList');
   const billingDeleteBtn = document.getElementById('billingDelete');
   const billingGenerateBtn = document.getElementById('billingGenerate');
@@ -560,6 +561,18 @@
     billingListBtn.onclick = async () => {
       billingResult.textContent = '查询中...';
       const { res, json, text } = await apiFetch('/admin/api/v1/billing/keys');
+      if (!res.ok) {
+        billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
+        return;
+      }
+      billingResult.textContent = JSON.stringify(json || {}, null, 2);
+    };
+  }
+
+  if (billingOverviewBtn) {
+    billingOverviewBtn.onclick = async () => {
+      billingResult.textContent = '查询中...';
+      const { res, json, text } = await apiFetch('/admin/api/v1/billing/overview');
       if (!res.ok) {
         billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
         return;

@@ -130,6 +130,7 @@ async fn handle_api(req: Request<Body>, state: Arc<RouterState>) -> Response<Bod
         (&Method::GET, "/admin/api/v1/requests/stream") => requests_stream(state).await,
         (&Method::GET, "/admin/api/v1/requests") => api_requests(state, req.uri()).await,
         (&Method::GET, "/admin/api/v1/metrics") => api_metrics(state, req.uri()).await,
+        (&Method::GET, "/admin/api/v1/billing/overview") => api_billing_overview(state).await,
         (&Method::GET, "/admin/api/v1/billing/keys") => api_billing_list_keys(state).await,
         (&Method::POST, "/admin/api/v1/billing/keys") => api_billing_create_key(req, state).await,
         _ => {
@@ -264,6 +265,29 @@ async fn api_billing_list_keys(state: Arc<RouterState>) -> Response<Body> {
     json_ok(&serde_json::json!({
         "keys": keys,
         "count": count
+    }))
+}
+
+async fn api_billing_overview(state: Arc<RouterState>) -> Response<Body> {
+    let keys = state.billing.list_keys();
+    let mut total_balance = 0i64;
+    let mut positive_keys = 0usize;
+    let mut zero_keys = 0usize;
+
+    for (_key, balance) in keys.iter() {
+        total_balance = total_balance.saturating_add(*balance);
+        if *balance > 0 {
+            positive_keys += 1;
+        } else {
+            zero_keys += 1;
+        }
+    }
+
+    json_ok(&serde_json::json!({
+        "keys_total": keys.len(),
+        "keys_positive": positive_keys,
+        "keys_zero": zero_keys,
+        "balance_total": total_balance
     }))
 }
 
