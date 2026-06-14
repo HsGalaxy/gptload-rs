@@ -997,6 +997,10 @@ fn record_request(
     resp_bytes: usize,
     usage: Option<UsageTokens>,
 ) {
+    if !ctx.path.starts_with("/v1") {
+        return;
+    }
+
     let total_ms = ctx.start.elapsed().as_millis() as u64;
     let entry = RequestLogEntry {
         id: REQUEST_LOG_ID.fetch_add(1, Ordering::Relaxed),
