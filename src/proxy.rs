@@ -689,6 +689,7 @@ async fn forward(
         request_body,
         0,
     );
+    log_ctx.is_stream = Some(stream_request);
 
     let Some(model) = model else {
         return logged_json_error(
@@ -948,6 +949,7 @@ struct RequestLogContext {
     request_headers: Option<std::collections::BTreeMap<String, String>>,
     request_body: Option<String>,
     queue_ms: u64,
+    is_stream: Option<bool>,
 }
 
 impl RequestLogContext {
@@ -975,6 +977,7 @@ impl RequestLogContext {
             request_headers,
             request_body,
             queue_ms,
+            is_stream: None,
         }
     }
 }
@@ -1019,6 +1022,7 @@ fn record_request(
             total_ms,
             attempts: 0,
         },
+        is_stream: ctx.is_stream,
     };
     if let Some(usage) = usage {
         state

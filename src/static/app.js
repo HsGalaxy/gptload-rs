@@ -381,12 +381,14 @@
         ? `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.thought_tokens || 0}/${r.total_tokens}`
         : `${r.prompt_tokens || 0}/${r.completion_tokens || 0}/${r.total_tokens}`)
       : '-';
+    const streamLabel = r.is_stream == null ? '-' : (r.is_stream ? '流式' : '普通');
     const bytes = `${r.req_bytes || 0}/${r.resp_bytes || 0}`;
     tr.innerHTML = `
       <td class="small">${new Date(r.ts_ms).toLocaleTimeString()}</td>
       <td class="mono small">${escapeHtml(r.client_ip || '')}</td>
       <td class="mono small cell-truncate" title="${escapeHtml(r.model || '-')}">${escapeHtml(r.model || '-')}</td>
       <td><span class="pill ${statusClass}">${status || '—'}</span></td>
+      <td class="small">${streamLabel}</td>
       <td class="mono small">${r.latency_ms || 0}</td>
       <td class="mono small">${tokens}</td>
       <td class="mono small">${bytes}</td>

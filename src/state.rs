@@ -273,6 +273,8 @@ pub struct RequestLogEntry {
     pub request_body: Option<String>,
     #[serde(default)]
     pub timing: RequestTiming,
+    #[serde(default)]
+    pub is_stream: Option<bool>,
 }
 
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
