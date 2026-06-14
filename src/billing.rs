@@ -238,11 +238,31 @@ impl BillingStore {
     }
 }
 
+fn decode_balance(bytes: &[u8]) -> Option<i64> {
+    if bytes.len() == 8 {
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(bytes);
+        Some(i64::from_le_bytes(arr))
+    } else {
+        None
+    }
+}
+
+fn flush_pending(tree: &sled::Tree, pending: &mut AHashMap<String, i64>) {
+    if pending.is_empty() {
+        return;
+    }
+    for (key, balance) in pending.drain() {
+        let encoded = balance.to_le_bytes();
+        let _ = tree.insert(key.as_bytes(), &encoded);
+    }
+    let _ = tree.flush();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::KeyStore;
-    use std::path::PathBuf;
 
     fn test_store(name: &str) -> BillingStore {
         let mut path = std::env::temp_dir();
@@ -252,7 +272,7 @@ mod tests {
             name
         ));
         let _ = std::fs::remove_dir_all(&path);
-        let store = KeyStore::open(&PathBuf::from(path)).unwrap();
+        let store = KeyStore::open(&path).unwrap();
         BillingStore::new(&store).unwrap()
     }
 
@@ -305,25 +325,4 @@ mod tests {
             .create_key("bk-ok".to_string(), UNLIMITED_BALANCE)
             .unwrap());
     }
-}
-
-fn decode_balance(bytes: &[u8]) -> Option<i64> {
-    if bytes.len() == 8 {
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(bytes);
-        Some(i64::from_le_bytes(arr))
-    } else {
-        None
-    }
-}
-
-fn flush_pending(tree: &sled::Tree, pending: &mut AHashMap<String, i64>) {
-    if pending.is_empty() {
-        return;
-    }
-    for (key, balance) in pending.drain() {
-        let encoded = balance.to_le_bytes();
-        let _ = tree.insert(key.as_bytes(), &encoded);
-    }
-    let _ = tree.flush();
 }
