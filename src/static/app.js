@@ -27,6 +27,7 @@
   const upstreamIdInput = document.getElementById('upstreamId');
   const upstreamBaseUrlInput = document.getElementById('upstreamBaseUrl');
   const upstreamWeightInput = document.getElementById('upstreamWeight');
+  const upstreamMinKeyLevelInput = document.getElementById('upstreamMinKeyLevel');
   const upstreamFormatInput = document.getElementById('upstreamFormat');
   const upstreamProxyInput = document.getElementById('upstreamProxy');
   const addUpstreamBtn = document.getElementById('addUpstream');
@@ -43,6 +44,7 @@
   const billingKeyInput = document.getElementById('billingKey');
   const billingBalanceInput = document.getElementById('billingBalance');
   const billingDeltaInput = document.getElementById('billingDelta');
+  const billingLevelInput = document.getElementById('billingLevel');
   const billingCreateBtn = document.getElementById('billingCreate');
   const billingQueryBtn = document.getElementById('billingQuery');
   const billingAdjustBtn = document.getElementById('billingAdjust');
@@ -50,6 +52,7 @@
   const billingListBtn = document.getElementById('billingList');
   const billingDeleteBtn = document.getElementById('billingDelete');
   const billingGenerateBtn = document.getElementById('billingGenerate');
+  const billingLevelBtn = document.getElementById('billingLevelSet');
   const billingResult = document.getElementById('billingResult');
 
   const loadRoutesBtn = document.getElementById('loadRoutes');
@@ -205,6 +208,7 @@
         <td class="mono small cell-truncate cell-url" title="${escapeHtml(u.base_url)}">${escapeHtml(u.base_url)}</td>
         <td class="mono small">${escapeHtml(u.format || 'openai')}</td>
         <td class="mono small cell-truncate" title="${escapeHtml(u.proxy || '-')}">${escapeHtml(u.proxy || '-')}</td>
+        <td class="mono small">${u.min_key_level != null ? u.min_key_level : 0}</td>
         <td><div class="slider-cell"><input type="range" min="1" max="100" value="${u.weight}" data-upstream="${escapeHtml(u.id)}" class="weightSlider" aria-label="weight ${escapeHtml(u.id)}" /> <span class="mono small">${u.weight}</span></div></td>
         <td class="${keysClass}">${active}/${invalid}</td>
         <td class="mono small">${u.selected_total || 0}</td>
@@ -525,11 +529,14 @@
     billingCreateBtn.onclick = async () => {
       const key = (billingKeyInput.value || '').trim();
       const balanceRaw = (billingBalanceInput.value || '').trim();
+      const level = parseLevelInput(billingLevelInput, '等级');
       const balance = balanceRaw ? parseInt(balanceRaw, 10) : 0;
       if (!key) return alert('请输入 key');
       if (!Number.isFinite(balance)) return alert('余额格式错误');
+      if (level === undefined) return;
       billingResult.textContent = '提交中...';
       const payload = { key, balance };
+      if (level !== null) payload.level = level;
       const { res, json, text } = await apiFetch('/admin/api/v1/billing/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -620,14 +627,47 @@
     };
   }
 
+  if (billingLevelBtn) {
+    billingLevelBtn.onclick = async () => {
+      const key = (billingKeyInput.value || '').trim();
+      const level = parseLevelInput(billingLevelInput, '等级');
+      if (!key) return alert('请输入 key');
+      if (level === undefined) return;
+      if (level === null) return alert('请输入等级');
+      billingResult.textContent = '提交中...';
+      const { res, json, text } = await apiFetch(`/admin/api/v1/billing/keys/${encodeURIComponent(key)}/level`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level })
+      });
+      if (!res.ok) {
+        billingResult.textContent = `失败 ${res.status}\n${text || ''}`;
+        return;
+      }
+      billingResult.textContent = JSON.stringify(json || {}, null, 2);
+    };
+  }
+
   function fillUpstreamForm(id) {
     const u = lastUpstreams.find(x => x.id === id);
     if (!u) return;
     upstreamIdInput.value = u.id || '';
     upstreamBaseUrlInput.value = u.base_url || '';
     upstreamWeightInput.value = u.weight != null ? String(u.weight) : '';
+    if (upstreamMinKeyLevelInput) upstreamMinKeyLevelInput.value = u.min_key_level != null ? String(u.min_key_level) : '';
     if (upstreamFormatInput) upstreamFormatInput.value = u.format || '';
     if (upstreamProxyInput) upstreamProxyInput.value = u.proxy || '';
+  }
+
+  function parseLevelInput(input, label) {
+    const raw = (input && input.value || '').trim();
+    if (!raw) return null;
+    const level = Number(raw);
+    if (!Number.isInteger(level) || (level < 0 && level !== -1)) {
+      alert(`${label}格式错误`);
+      return undefined;
+    }
+    return level;
   }
 
   async function updateWeight(id, weight) {
@@ -635,6 +675,8 @@
     if (!u || !Number.isInteger(weight) || weight <= 0) return;
     const payload = { base_url: u.base_url, weight };
     if (u.max_concurrent_per_key) payload.max_concurrent_per_key = u.max_concurrent_per_key;
+    if (u.min_key_level != null) payload.min_key_level = u.min_key_level;
+    if (u.model_map) payload.model_map = u.model_map;
     if (u.format) payload.format = u.format;
     if (u.proxy) payload.proxy = u.proxy;
     const { res, text } = await apiFetch(`/admin/api/v1/upstreams/${encodeURIComponent(id)}`, {
@@ -657,14 +699,17 @@
     const id = (upstreamIdInput.value || '').trim();
     const baseUrl = (upstreamBaseUrlInput.value || '').trim();
     const weightRaw = (upstreamWeightInput.value || '').trim();
+    const minLevel = parseLevelInput(upstreamMinKeyLevelInput, 'Min Level');
     const format = (upstreamFormatInput && upstreamFormatInput.value || '').trim();
     const proxy = (upstreamProxyInput && upstreamProxyInput.value || '').trim();
     const weight = weightRaw ? parseInt(weightRaw, 10) : null;
     if (!id) return alert('请输入 upstream id');
     if (!baseUrl) return alert('请输入 base_url');
+    if (minLevel === undefined) return;
     upstreamResult.textContent = '提交中...';
     const payload = { id, base_url: baseUrl };
     if (Number.isInteger(weight) && weight > 0) payload.weight = weight;
+    if (minLevel !== null) payload.min_key_level = minLevel;
     if (format) payload.format = format;
     if (proxy) payload.proxy = proxy;
     const { res, text } = await apiFetch('/admin/api/v1/upstreams', {
@@ -685,14 +730,19 @@
     const id = (upstreamIdInput.value || '').trim();
     const baseUrl = (upstreamBaseUrlInput.value || '').trim();
     const weightRaw = (upstreamWeightInput.value || '').trim();
+    const minLevel = parseLevelInput(upstreamMinKeyLevelInput, 'Min Level');
     const format = (upstreamFormatInput && upstreamFormatInput.value || '').trim();
     const proxy = (upstreamProxyInput && upstreamProxyInput.value || '').trim();
     const weight = weightRaw ? parseInt(weightRaw, 10) : null;
     if (!id) return alert('请输入 upstream id');
     if (!baseUrl) return alert('请输入 base_url');
+    if (minLevel === undefined) return;
     upstreamResult.textContent = '提交中...';
     const payload = { base_url: baseUrl };
+    const existing = lastUpstreams.find(x => x.id === id);
     if (Number.isInteger(weight) && weight > 0) payload.weight = weight;
+    if (minLevel !== null) payload.min_key_level = minLevel;
+    if (existing && existing.model_map) payload.model_map = existing.model_map;
     if (format) payload.format = format;
     if (proxy) payload.proxy = proxy;
     const { res, text } = await apiFetch(`/admin/api/v1/upstreams/${encodeURIComponent(id)}`, {
@@ -726,6 +776,7 @@
     upstreamIdInput.value = '';
     upstreamBaseUrlInput.value = '';
     upstreamWeightInput.value = '';
+    if (upstreamMinKeyLevelInput) upstreamMinKeyLevelInput.value = '';
     if (upstreamFormatInput) upstreamFormatInput.value = '';
     if (upstreamProxyInput) upstreamProxyInput.value = '';
     await refreshUpstreams();

@@ -137,6 +137,7 @@ pub struct Upstream {
 
     pub weight: usize,
     pub max_concurrent_per_key: u32,
+    pub min_key_level: i32,
     pub format: UpstreamFormat,
     pub proxy: Option<String>,
     pub client: UpstreamClient,
@@ -516,6 +517,11 @@ impl RuntimeConfig {
     }
 }
 
+#[inline]
+pub fn key_level_allows(billing_key_level: i32, min_key_level: i32) -> bool {
+    min_key_level < 0 || billing_key_level == -1 || billing_key_level >= min_key_level
+}
+
 impl RouterState {
     pub fn new(cfg: Config, config_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let runtime = Arc::new(RuntimeConfig::from_config(&cfg));
@@ -742,13 +748,19 @@ impl RouterState {
 
     /// Select an upstream + key that supports the given model.
     /// Returns None only if no upstream has active keys for the model.
-    pub fn select_for_model(&self, model: &str, _now_ms: u64) -> Option<Selected> {
-        self.select_for_model_excluding(model, None)
+    pub fn select_for_model(
+        &self,
+        model: &str,
+        billing_key_level: i32,
+        _now_ms: u64,
+    ) -> Option<Selected> {
+        self.select_for_model_excluding(model, billing_key_level, None)
     }
 
     pub fn select_for_model_excluding(
         &self,
         model: &str,
+        billing_key_level: i32,
         exclude: Option<(&str, &str)>,
     ) -> Option<Selected> {
         if self.is_shutting_down() {
@@ -768,6 +780,9 @@ impl RouterState {
             let u = &snap.upstreams[u_idx];
 
             if !u.models.load().contains(model) && !u.model_map.contains_key(model) {
+                continue;
+            }
+            if !key_level_allows(billing_key_level, u.min_key_level) {
                 continue;
             }
 
@@ -800,6 +815,14 @@ impl RouterState {
         snap.upstreams
             .iter()
             .any(|u| u.models.load().contains(model) || u.model_map.contains_key(model))
+    }
+
+    pub fn model_allowed_for_level(&self, model: &str, billing_key_level: i32) -> bool {
+        let snap = self.snapshot.load_full();
+        snap.upstreams.iter().any(|u| {
+            (u.models.load().contains(model) || u.model_map.contains_key(model))
+                && key_level_allows(billing_key_level, u.min_key_level)
+        })
     }
 
     pub fn any_models_loaded(&self) -> bool {
@@ -1344,6 +1367,7 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
         base_path: Arc::<str>::from(base_path),
         weight,
         max_concurrent_per_key: u.max_concurrent_per_key.unwrap_or(0),
+        min_key_level: u.min_key_level,
         format,
         proxy,
         client,
@@ -1666,6 +1690,7 @@ impl RouterState {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
+                min_key_level: u.min_key_level,
             })
             .collect()
     }

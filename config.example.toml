@@ -83,6 +83,8 @@ format = "openai"
 # max_concurrent_per_key = 5
 # Optional incoming model -> upstream model aliases.
 # model_map = { "gpt-4o-mini" = "vendor-small-model" }
+# Minimum billing key level required for this upstream. -1 disables this gate.
+# min_key_level = 0
 
 # Example: second upstream (OpenAI-compatible) weighted 2x
 [[upstreams]]

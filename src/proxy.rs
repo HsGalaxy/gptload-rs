@@ -5,7 +5,8 @@ use crate::billing::ReserveResult;
 use crate::config::UpstreamFormat;
 use crate::format::{self, AuthStyle};
 use crate::state::{
-    sanitize_hop_headers, RequestLogEntry, RouterState, Selected, HDR_AUTHORIZATION,
+    key_level_allows, sanitize_hop_headers, RequestLogEntry, RouterState, Selected,
+    HDR_AUTHORIZATION,
 };
 use crate::util::now_ms;
 use flate2::{Decompress, FlushDecompress, Status};
@@ -257,6 +258,7 @@ async fn handle_inner(
             "balance_insufficient",
         );
     }
+    let billing_key_level = state.store.get_key_level(&billing_key);
 
     // Stats: request start. The guard is moved into proxied response streams
     // so streaming requests stay inflight until the body finishes or is dropped.
@@ -283,6 +285,7 @@ async fn handle_inner(
                 method,
                 path,
                 billing_key,
+                billing_key_level,
             )
             .await
         };
@@ -368,6 +371,7 @@ async fn execute_attempt(
     injected: bool,
     billing_reserved: &mut bool,
     billing_key: &str,
+    billing_key_level: i32,
     log_ctx: &RequestLogContext,
     stream_request: bool,
     lifecycle: &mut Option<RequestLifecycle>,
@@ -481,7 +485,8 @@ async fn execute_attempt(
 
             if should_retry {
                 if let Some(new_sel) = state.select_for_model_excluding(
-                    &log_ctx.model.clone().unwrap_or_default(),
+                    log_ctx.model.as_deref().unwrap_or_default(),
+                    billing_key_level,
                     Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
                 ) {
                     drop(up_resp);
@@ -518,7 +523,8 @@ async fn execute_attempt(
             state.on_network_error(sel, now);
 
             if let Some(new_sel) = state.select_for_model_excluding(
-                &log_ctx.model.clone().unwrap_or_default(),
+                log_ctx.model.as_deref().unwrap_or_default(),
+                billing_key_level,
                 Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
             ) {
                 tracing::debug!(
@@ -548,7 +554,8 @@ async fn execute_attempt(
             state.on_timeout(sel, now);
 
             if let Some(new_sel) = state.select_for_model_excluding(
-                &log_ctx.model.clone().unwrap_or_default(),
+                log_ctx.model.as_deref().unwrap_or_default(),
+                billing_key_level,
                 Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
             ) {
                 tracing::debug!(
@@ -585,6 +592,7 @@ async fn forward(
     method: hyper::Method,
     path: String,
     billing_key: String,
+    billing_key_level: i32,
 ) -> Response<Body> {
     const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
     let mut lifecycle = Some(lifecycle);
@@ -722,10 +730,18 @@ async fn forward(
             "model not found",
             "model_not_found",
         );
-    } else if let Some(sel) = state.select_for_model(&model, now) {
+    } else if !state.model_allowed_for_level(&model, billing_key_level) {
+        return logged_json_error(
+            &state,
+            &log_ctx,
+            http::StatusCode::FORBIDDEN,
+            "billing key level insufficient for model",
+            "model_forbidden",
+        );
+    } else if let Some(sel) = state.select_for_model(&model, billing_key_level, now) {
         sel
     } else {
-        match wait_for_selection(&state, &model).await {
+        match wait_for_selection(&state, &model, billing_key_level).await {
             Ok((sel, waited)) => {
                 queue_wait_ms = waited;
                 sel
@@ -775,6 +791,7 @@ async fn forward(
             injected,
             &mut billing_reserved,
             &billing_key,
+            billing_key_level,
             &log_ctx,
             stream_request,
             &mut lifecycle,
@@ -808,6 +825,7 @@ async fn forward(
 async fn wait_for_selection(
     state: &Arc<RouterState>,
     model: &str,
+    billing_key_level: i32,
 ) -> Result<(Selected, u64), Response<Body>> {
     let server = state.server_config();
     if !server.queue_enabled {
@@ -834,11 +852,11 @@ async fn wait_for_selection(
                 "shutting_down",
             ));
         }
-        if let Some(sel) = state.select_for_model(model, now_ms()) {
+        if let Some(sel) = state.select_for_model(model, billing_key_level, now_ms()) {
             return Ok((sel, start.elapsed().as_millis() as u64));
         }
 
-        if let Some(delay) = next_cooldown_delay(state, model) {
+        if let Some(delay) = next_cooldown_delay(state, model, billing_key_level) {
             let cooldown = tokio::time::sleep(delay);
             tokio::pin!(cooldown);
             tokio::select! {
@@ -861,12 +879,19 @@ async fn wait_for_selection(
     }
 }
 
-fn next_cooldown_delay(state: &RouterState, model: &str) -> Option<std::time::Duration> {
+fn next_cooldown_delay(
+    state: &RouterState,
+    model: &str,
+    billing_key_level: i32,
+) -> Option<std::time::Duration> {
     let now = now_ms();
     let snap = state.snapshot.load_full();
     let mut next_until: Option<u64> = None;
     for upstream in snap.upstreams.iter() {
-        if !upstream.models.load().contains(model) {
+        if !upstream.models.load().contains(model) && !upstream.model_map.contains_key(model) {
+            continue;
+        }
+        if !key_level_allows(billing_key_level, upstream.min_key_level) {
             continue;
         }
         let keys = upstream.active_keys.load_full();

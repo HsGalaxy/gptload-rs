@@ -3,6 +3,7 @@
 use crate::billing::AdjustResult;
 use crate::config::{UpstreamConfig, UpstreamFormat};
 use crate::state::{build_key_states, validate_keys, MetricsWindow, RouterState};
+use crate::storage::validate_key_level;
 use crate::util::{now_ms, query_get};
 use bytes::Bytes;
 use hyper::{Body, Method, Request, Response};
@@ -191,6 +192,18 @@ async fn handle_billing_key_subroutes(
         };
     }
 
+    if action == "level" {
+        return match *req.method() {
+            Method::GET => api_billing_get_level(state, key).await,
+            Method::POST | Method::PUT => api_billing_set_level(req, state, key).await,
+            _ => Response::builder()
+                .status(405)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"error":"method_not_allowed"}"#))
+                .unwrap(),
+        };
+    }
+
     Response::builder()
         .status(404)
         .header("content-type", "application/json")
@@ -202,11 +215,17 @@ async fn handle_billing_key_subroutes(
 struct BillingCreateBody {
     key: String,
     balance: Option<i64>,
+    level: Option<i32>,
 }
 
 #[derive(Deserialize)]
 struct BillingAdjustBody {
     delta: i64,
+}
+
+#[derive(Deserialize)]
+struct BillingLevelBody {
+    level: i32,
 }
 
 async fn api_billing_create_key(req: Request<Body>, state: Arc<RouterState>) -> Response<Body> {
@@ -230,6 +249,14 @@ async fn api_billing_create_key(req: Request<Body>, state: Arc<RouterState>) -> 
             "bad_request",
         );
     }
+    let level = payload.level.unwrap_or(0);
+    if let Err(e) = validate_key_level(level) {
+        return RouterState::json_error(
+            http::StatusCode::BAD_REQUEST,
+            &e.to_string(),
+            "bad_request",
+        );
+    }
     let created = match state.billing.create_key(key.to_string(), balance) {
         Ok(v) => v,
         Err(e) => {
@@ -247,9 +274,19 @@ async fn api_billing_create_key(req: Request<Body>, state: Arc<RouterState>) -> 
             "key_exists",
         );
     }
+    if payload.level.is_some() {
+        if let Err(e) = state.store.set_key_level(key, level) {
+            return RouterState::json_error(
+                http::StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("set key level failed: {e}"),
+                "billing_error",
+            );
+        }
+    }
     json_ok(&serde_json::json!({
         "key": key,
         "balance": balance,
+        "level": level,
         "created": true
     }))
 }
@@ -259,7 +296,10 @@ async fn api_billing_list_keys(state: Arc<RouterState>) -> Response<Body> {
         .billing
         .list_keys()
         .into_iter()
-        .map(|(key, balance)| serde_json::json!({ "key": key, "balance": balance }))
+        .map(|(key, balance)| {
+            let level = state.store.get_key_level(&key);
+            serde_json::json!({ "key": key, "balance": balance, "level": level })
+        })
         .collect();
     let count = keys.len();
     json_ok(&serde_json::json!({
@@ -295,7 +335,8 @@ async fn api_billing_get_balance(state: Arc<RouterState>, key: &str) -> Response
     match state.billing.get_balance(key) {
         Some(balance) => json_ok(&serde_json::json!({
             "key": key,
-            "balance": balance
+            "balance": balance,
+            "level": state.store.get_key_level(key)
         })),
         None => RouterState::json_error(
             http::StatusCode::NOT_FOUND,
@@ -307,10 +348,13 @@ async fn api_billing_get_balance(state: Arc<RouterState>, key: &str) -> Response
 
 async fn api_billing_delete_key(state: Arc<RouterState>, key: &str) -> Response<Body> {
     match state.billing.delete_key(key) {
-        Ok(true) => json_ok(&serde_json::json!({
-            "key": key,
-            "deleted": true
-        })),
+        Ok(true) => {
+            let _ = state.store.delete_key_level(key);
+            json_ok(&serde_json::json!({
+                "key": key,
+                "deleted": true
+            }))
+        }
         Ok(false) => RouterState::json_error(
             http::StatusCode::NOT_FOUND,
             "key not found",
@@ -319,6 +363,56 @@ async fn api_billing_delete_key(state: Arc<RouterState>, key: &str) -> Response<
         Err(e) => RouterState::json_error(
             http::StatusCode::INTERNAL_SERVER_ERROR,
             &format!("delete key failed: {e}"),
+            "billing_error",
+        ),
+    }
+}
+
+async fn api_billing_get_level(state: Arc<RouterState>, key: &str) -> Response<Body> {
+    if state.billing.get_balance(key).is_none() {
+        return RouterState::json_error(
+            http::StatusCode::NOT_FOUND,
+            "key not found",
+            "key_not_found",
+        );
+    }
+    json_ok(&serde_json::json!({
+        "key": key,
+        "level": state.store.get_key_level(key)
+    }))
+}
+
+async fn api_billing_set_level(
+    req: Request<Body>,
+    state: Arc<RouterState>,
+    key: &str,
+) -> Response<Body> {
+    if state.billing.get_balance(key).is_none() {
+        return RouterState::json_error(
+            http::StatusCode::NOT_FOUND,
+            "key not found",
+            "key_not_found",
+        );
+    }
+    let payload: BillingLevelBody = match parse_json_body(req).await {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    if let Err(e) = validate_key_level(payload.level) {
+        return RouterState::json_error(
+            http::StatusCode::BAD_REQUEST,
+            &e.to_string(),
+            "bad_request",
+        );
+    }
+    match state.store.set_key_level(key, payload.level) {
+        Ok(()) => json_ok(&serde_json::json!({
+            "key": key,
+            "level": payload.level
+        })),
+        Err(e) => RouterState::json_error(
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("set key level failed: {e}"),
             "billing_error",
         ),
     }
@@ -528,6 +622,7 @@ struct UpstreamBody {
     proxy: Option<String>,
     #[serde(default)]
     model_map: BTreeMap<String, String>,
+    min_key_level: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -539,11 +634,13 @@ struct UpstreamUpdateBody {
     proxy: Option<String>,
     #[serde(default)]
     model_map: BTreeMap<String, String>,
+    min_key_level: Option<i32>,
 }
 
 fn validate_upstream_limits(
     weight: Option<usize>,
     max_concurrent_per_key: Option<u32>,
+    min_key_level: Option<i32>,
 ) -> Option<Response<Body>> {
     if weight.unwrap_or(1) > 10_000 {
         return Some(RouterState::json_error(
@@ -558,6 +655,15 @@ fn validate_upstream_limits(
             "max_concurrent_per_key must be <= 256",
             "bad_request",
         ));
+    }
+    if let Some(level) = min_key_level {
+        if level < 0 && level != -1 {
+            return Some(RouterState::json_error(
+                http::StatusCode::BAD_REQUEST,
+                "min_key_level must be >= 0 or -1",
+                "bad_request",
+            ));
+        }
     }
     None
 }
@@ -577,7 +683,11 @@ async fn api_add_upstream(req: Request<Body>, state: Arc<RouterState>) -> Respon
             "bad_request",
         );
     }
-    if let Some(resp) = validate_upstream_limits(input.weight, input.max_concurrent_per_key) {
+    if let Some(resp) = validate_upstream_limits(
+        input.weight,
+        input.max_concurrent_per_key,
+        input.min_key_level,
+    ) {
         return resp;
     }
     let cfg = UpstreamConfig {
@@ -588,6 +698,7 @@ async fn api_add_upstream(req: Request<Body>, state: Arc<RouterState>) -> Respon
         format: input.format,
         proxy: input.proxy.filter(|p| !p.trim().is_empty()),
         model_map: input.model_map,
+        min_key_level: input.min_key_level.unwrap_or(0),
     };
     let state2 = state.clone();
     let res = tokio::task::spawn_blocking(move || state2.add_upstream(cfg)).await;
@@ -623,7 +734,11 @@ async fn api_update_upstream(
             "bad_request",
         );
     }
-    if let Some(resp) = validate_upstream_limits(input.weight, input.max_concurrent_per_key) {
+    if let Some(resp) = validate_upstream_limits(
+        input.weight,
+        input.max_concurrent_per_key,
+        input.min_key_level,
+    ) {
         return resp;
     }
     let state2 = state.clone();
@@ -636,6 +751,7 @@ async fn api_update_upstream(
         format: input.format,
         proxy: input.proxy.filter(|p| !p.trim().is_empty()),
         model_map: input.model_map,
+        min_key_level: input.min_key_level.unwrap_or(0),
     };
     let res = tokio::task::spawn_blocking(move || state2.update_upstream(&id, cfg)).await;
     match res {
@@ -683,6 +799,7 @@ struct UpstreamInfo {
     proxy: Option<String>,
     weight: usize,
     max_concurrent_per_key: u32,
+    min_key_level: i32,
     model_map: BTreeMap<String, String>,
     keys_total: usize,
     keys_active: usize,
@@ -714,6 +831,7 @@ fn build_upstream_info(u: &crate::state::Upstream, global_max: u32) -> UpstreamI
         proxy: u.proxy.clone(),
         weight: u.weight,
         max_concurrent_per_key: effective_max,
+        min_key_level: u.min_key_level,
         model_map: u
             .model_map
             .iter()
