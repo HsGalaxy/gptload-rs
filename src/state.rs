@@ -1980,6 +1980,9 @@ pub fn validate_keys(keys: &[String]) -> anyhow::Result<()> {
         if k.is_empty() {
             continue;
         }
+        if k.chars().any(char::is_whitespace) {
+            anyhow::bail!("key must not contain whitespace");
+        }
         valid_count += 1;
         hyper::header::HeaderValue::from_str(&format!("Bearer {}", k))
             .map_err(|_| anyhow::anyhow!("invalid key (cannot be used in HTTP header)"))?;

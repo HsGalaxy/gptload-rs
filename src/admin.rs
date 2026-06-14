@@ -1799,10 +1799,18 @@ async fn api_delete_keys(
         Ok(v) => v,
         Err(e) => return RouterState::json_error(http::StatusCode::BAD_REQUEST, &e, "bad_request"),
     };
+    let keys = if dedupe { dedupe_keys(keys) } else { keys };
     if keys.is_empty() {
         return RouterState::json_error(
             http::StatusCode::BAD_REQUEST,
             "no keys provided",
+            "bad_request",
+        );
+    }
+    if let Err(e) = validate_keys(&keys) {
+        return RouterState::json_error(
+            http::StatusCode::BAD_REQUEST,
+            &e.to_string(),
             "bad_request",
         );
     }
@@ -1820,7 +1828,6 @@ async fn api_delete_keys(
             .keys_update_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("key update lock poisoned"))?;
-        let keys = if dedupe { dedupe_keys(keys) } else { keys };
         let removed = store.delete_keys(&id, &keys)?;
 
         // Update in-memory: filter out removed keys.
@@ -1892,6 +1899,8 @@ fn scoped_key_set(body: &KeyStatusBody) -> Result<KeyStatusScope, String> {
     if set.is_empty() {
         Err("keys must contain at least one non-empty key unless all is true".to_string())
     } else {
+        let keys: Vec<String> = set.iter().cloned().collect();
+        validate_keys(&keys).map_err(|e| e.to_string())?;
         Ok(KeyStatusScope::Keys(set))
     }
 }
@@ -2137,7 +2146,14 @@ async fn parse_keys_body(req: Request<Body>) -> Result<(Vec<String>, bool), Stri
     if content_type.starts_with("application/json") {
         let v: JsonKeysBody =
             serde_json::from_slice(&body_bytes).map_err(|e| format!("invalid json: {e}"))?;
-        Ok((v.keys, v.dedupe.unwrap_or(true)))
+        let mut keys = Vec::with_capacity(v.keys.len());
+        for key in v.keys {
+            let key = key.trim();
+            if !key.is_empty() {
+                keys.push(key.to_string());
+            }
+        }
+        Ok((keys, v.dedupe.unwrap_or(true)))
     } else {
         // Treat as plain text.
         let s = std::str::from_utf8(&body_bytes).map_err(|_| "body is not utf-8".to_string())?;
