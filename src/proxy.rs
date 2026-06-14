@@ -249,7 +249,7 @@ async fn handle_inner(
         }
     };
 
-    if balance <= 0 {
+    if balance <= 0 && balance != crate::billing::UNLIMITED_BALANCE {
         return logged_json_error(
             &state,
             &base_log_ctx,

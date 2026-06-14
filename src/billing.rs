@@ -6,6 +6,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+pub const UNLIMITED_BALANCE: i64 = -1;
+
 pub struct BillingStore {
     balances: Arc<RwLock<AHashMap<String, Arc<AtomicI64>>>>,
     persist_tx: Sender<PersistUpdate>,
@@ -85,8 +87,8 @@ impl BillingStore {
     }
 
     pub fn create_key(&self, key: String, balance: i64) -> anyhow::Result<bool> {
-        if balance < 0 {
-            anyhow::bail!("balance must be non-negative");
+        if balance < 0 && balance != UNLIMITED_BALANCE {
+            anyhow::bail!("balance must be non-negative or -1");
         }
         let mut map = self
             .balances
@@ -146,6 +148,9 @@ impl BillingStore {
 
         let mut cur = balance.load(Ordering::Relaxed);
         loop {
+            if cur == UNLIMITED_BALANCE {
+                return AdjustResult::Updated(UNLIMITED_BALANCE);
+            }
             let new_balance = cur.saturating_add(delta);
             if new_balance < 0 {
                 return AdjustResult::NegativeBalance;
@@ -169,7 +174,11 @@ impl BillingStore {
         drop(map);
         let mut cur = balance.load(Ordering::Relaxed);
         loop {
+            if cur == UNLIMITED_BALANCE {
+                return Some(UNLIMITED_BALANCE);
+            }
             let new_balance = cur.saturating_add(delta);
+            let new_balance = new_balance.max(0);
             match balance.compare_exchange(cur, new_balance, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => {
                     let _ = self.persist_tx.send(PersistUpdate::Set {
@@ -195,6 +204,9 @@ impl BillingStore {
 
         let mut cur = balance.load(Ordering::Relaxed);
         loop {
+            if cur == UNLIMITED_BALANCE {
+                return ReserveResult::Reserved;
+            }
             if cur <= 0 {
                 return ReserveResult::Insufficient;
             }
@@ -223,6 +235,75 @@ impl BillingStore {
             return self.get_balance(key);
         }
         self.adjust_balance_unchecked(key, adjustment)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::KeyStore;
+    use std::path::PathBuf;
+
+    fn test_store(name: &str) -> BillingStore {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "gptload-rs-billing-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        let store = KeyStore::open(&PathBuf::from(path)).unwrap();
+        BillingStore::new(&store).unwrap()
+    }
+
+    #[test]
+    fn unlimited_balance_is_not_mutated() {
+        let billing = test_store("unlimited");
+        assert!(billing
+            .create_key("bk-unlimited".to_string(), UNLIMITED_BALANCE)
+            .unwrap());
+
+        assert!(matches!(
+            billing.reserve_request("bk-unlimited"),
+            ReserveResult::Reserved
+        ));
+        assert_eq!(billing.get_balance("bk-unlimited"), Some(UNLIMITED_BALANCE));
+        assert_eq!(
+            billing.release_reservation("bk-unlimited"),
+            Some(UNLIMITED_BALANCE)
+        );
+        assert_eq!(
+            billing.settle_reserved_usage("bk-unlimited", 1_000),
+            Some(UNLIMITED_BALANCE)
+        );
+        assert!(matches!(
+            billing.adjust_balance("bk-unlimited", 100),
+            AdjustResult::Updated(UNLIMITED_BALANCE)
+        ));
+        assert_eq!(billing.get_balance("bk-unlimited"), Some(UNLIMITED_BALANCE));
+    }
+
+    #[test]
+    fn finite_settlement_clamps_at_zero() {
+        let billing = test_store("clamp");
+        assert!(billing.create_key("bk-finite".to_string(), 2).unwrap());
+
+        assert!(matches!(
+            billing.reserve_request("bk-finite"),
+            ReserveResult::Reserved
+        ));
+        assert_eq!(billing.get_balance("bk-finite"), Some(1));
+        assert_eq!(billing.settle_reserved_usage("bk-finite", 100), Some(0));
+        assert_eq!(billing.get_balance("bk-finite"), Some(0));
+    }
+
+    #[test]
+    fn create_rejects_negative_balances_except_unlimited() {
+        let billing = test_store("negative");
+        assert!(billing.create_key("bk-bad".to_string(), -2).is_err());
+        assert!(billing
+            .create_key("bk-ok".to_string(), UNLIMITED_BALANCE)
+            .unwrap());
     }
 }
 

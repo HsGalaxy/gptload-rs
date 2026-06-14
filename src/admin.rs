@@ -242,10 +242,10 @@ async fn api_billing_create_key(req: Request<Body>, state: Arc<RouterState>) -> 
         );
     }
     let balance = payload.balance.unwrap_or(0);
-    if balance < 0 {
+    if balance < 0 && balance != crate::billing::UNLIMITED_BALANCE {
         return RouterState::json_error(
             http::StatusCode::BAD_REQUEST,
-            "balance must be non-negative",
+            "balance must be non-negative or -1",
             "bad_request",
         );
     }
