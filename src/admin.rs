@@ -313,10 +313,13 @@ async fn api_billing_overview(state: Arc<RouterState>) -> Response<Body> {
     let mut total_balance = 0i64;
     let mut positive_keys = 0usize;
     let mut zero_keys = 0usize;
+    let mut unlimited_keys = 0usize;
 
     for (_key, balance) in keys.iter() {
-        total_balance = total_balance.saturating_add(*balance);
-        if *balance > 0 {
+        if *balance == crate::billing::UNLIMITED_BALANCE {
+            unlimited_keys += 1;
+        } else if *balance > 0 {
+            total_balance = total_balance.saturating_add(*balance);
             positive_keys += 1;
         } else {
             zero_keys += 1;
@@ -327,6 +330,7 @@ async fn api_billing_overview(state: Arc<RouterState>) -> Response<Body> {
         "keys_total": keys.len(),
         "keys_positive": positive_keys,
         "keys_zero": zero_keys,
+        "keys_unlimited": unlimited_keys,
         "balance_total": total_balance
     }))
 }
