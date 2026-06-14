@@ -63,10 +63,36 @@ fn main() -> anyhow::Result<()> {
         state.refresh_missing_models_routes().await;
         state.start_revalidation();
         spawn_config_reload(state.clone(), config_path);
-        tracing::info!(%addr, "listening (admin at /admin/)");
+        print_startup_info(&state, addr);
         let shutdown = graceful_shutdown_signal(state.clone());
         proxy::serve_http(addr, state, shutdown).await
     })
+}
+
+fn print_startup_info(state: &Arc<state::RouterState>, addr: SocketAddr) {
+    let snapshot = state.snapshot.load_full();
+    let display_addr = if addr.ip().is_unspecified() {
+        SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            addr.port(),
+        )
+    } else {
+        addr
+    };
+    let total_keys: usize = snapshot.upstreams.iter().map(|u| u.keys_len()).sum();
+    let runtime = state.runtime.load_full();
+
+    tracing::info!("gptload-rs v{}", env!("CARGO_PKG_VERSION"));
+    tracing::info!(%addr, admin = %format!("http://{display_addr}/admin/"), "listening");
+    tracing::info!(
+        upstreams = snapshot.upstreams.len(),
+        keys = total_keys,
+        admin_tokens = state.admin_tokens.len(),
+        max_retries = runtime.max_retries,
+        timeout_ms = runtime.request_timeout.as_millis() as u64,
+        queue_enabled = runtime.server.queue_enabled,
+        "runtime summary"
+    );
 }
 
 async fn graceful_shutdown_signal(state: Arc<state::RouterState>) {

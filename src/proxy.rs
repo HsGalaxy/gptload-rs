@@ -145,6 +145,14 @@ async fn handle_inner(
 ) -> Response<Body> {
     let path = req.uri().path().to_string();
 
+    if (req.method() == hyper::Method::GET || req.method() == hyper::Method::HEAD) && path == "/" {
+        return Response::builder()
+            .status(http::StatusCode::FOUND)
+            .header(http::header::LOCATION, "/admin/")
+            .body(Body::empty())
+            .unwrap();
+    }
+
     // Health check.
     if req.method() == hyper::Method::GET && path == "/health" {
         let snap = state.snapshot.load_full();
