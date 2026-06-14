@@ -533,6 +533,20 @@ impl RouterState {
         let model_routes_path = data_dir.join("models_routes.json");
         let upstreams_path = data_dir.join("upstreams.json");
         let requests_log_path = data_dir.join("requests.jsonl");
+        if runtime.server.request_log_retention_days > 0 {
+            match cleanup_request_log_history(
+                &requests_log_path,
+                runtime.server.request_log_retention_days,
+            ) {
+                Ok((kept, removed)) if removed > 0 => {
+                    tracing::info!(kept, removed, "cleaned request log history");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "request log history cleanup failed");
+                }
+            }
+        }
         let history = load_request_log_history(&requests_log_path, 5000);
         let log_tx = start_request_log_writer(requests_log_path);
         let requests = Arc::new(RequestsLog::new(5000, log_tx));
@@ -2035,6 +2049,53 @@ fn load_request_log_history(path: &Path, limit: usize) -> Vec<RequestLogEntry> {
     }
 
     entries.into_iter().collect()
+}
+
+fn cleanup_request_log_history(
+    path: &Path,
+    retention_days: u64,
+) -> std::io::Result<(usize, usize)> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => return Err(e),
+    };
+    let cutoff_ms = now_ms().saturating_sub(retention_days.saturating_mul(86_400_000));
+    let reader = std::io::BufReader::new(file);
+    let mut kept = 0usize;
+    let mut removed = 0usize;
+    let mut output = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let remove = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| {
+                v.get("ts_ms")
+                    .and_then(|ts| ts.as_u64())
+                    .map(|ts| ts < cutoff_ms)
+            })
+            .unwrap_or(false);
+        if remove {
+            removed += 1;
+            continue;
+        }
+        output.push_str(trimmed);
+        output.push('\n');
+        kept += 1;
+    }
+
+    if removed > 0 {
+        let tmp_path = path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp_path, output)?;
+        std::fs::rename(tmp_path, path)?;
+    }
+
+    Ok((kept, removed))
 }
 
 fn start_request_log_writer(path: PathBuf) -> Option<mpsc::Sender<RequestLogEntry>> {

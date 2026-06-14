@@ -47,6 +47,10 @@ queue_enabled = false
 queue_max_depth = 100
 queue_timeout_ms = 10000
 
+# Remove request log entries older than this many days on startup.
+# 0 disables cleanup.
+request_log_retention_days = 7
+
 [key]
 # Number of auth failures (401/403) before a key is auto-invalidated.
 # 0 = disabled (keys are never auto-blacklisted).

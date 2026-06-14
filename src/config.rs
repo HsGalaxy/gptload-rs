@@ -66,6 +66,11 @@ pub struct ServerConfig {
     /// Maximum time a queued request waits for capacity.
     #[serde(default = "default_queue_timeout_ms")]
     pub queue_timeout_ms: u64,
+
+    /// Remove request log entries older than this many days on startup.
+    /// 0 disables cleanup.
+    #[serde(default)]
+    pub request_log_retention_days: u64,
 }
 
 impl Default for ServerConfig {
@@ -76,6 +81,7 @@ impl Default for ServerConfig {
             queue_enabled: false,
             queue_max_depth: default_queue_max_depth(),
             queue_timeout_ms: default_queue_timeout_ms(),
+            request_log_retention_days: 0,
         }
     }
 }
