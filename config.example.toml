@@ -47,6 +47,10 @@ queue_enabled = false
 queue_max_depth = 100
 queue_timeout_ms = 10000
 
+# Remove request log entries older than this many days on startup.
+# 0 disables cleanup.
+request_log_retention_days = 7
+
 [key]
 # Number of auth failures (401/403) before a key is auto-invalidated.
 # 0 = disabled (keys are never auto-blacklisted).
@@ -77,6 +81,10 @@ format = "openai"
 # Per-upstream override for max concurrent requests per key.
 # Overrides the global [key].max_concurrent_per_key default.
 # max_concurrent_per_key = 5
+# Optional incoming model -> upstream model aliases.
+# model_map = { "gpt-4o-mini" = "vendor-small-model" }
+# Minimum billing key level required for this upstream. -1 disables this gate.
+# min_key_level = 0
 
 # Example: second upstream (OpenAI-compatible) weighted 2x
 [[upstreams]]

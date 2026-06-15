@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -66,6 +67,11 @@ pub struct ServerConfig {
     /// Maximum time a queued request waits for capacity.
     #[serde(default = "default_queue_timeout_ms")]
     pub queue_timeout_ms: u64,
+
+    /// Remove request log entries older than this many days on startup.
+    /// 0 disables cleanup.
+    #[serde(default)]
+    pub request_log_retention_days: u64,
 }
 
 impl Default for ServerConfig {
@@ -76,6 +82,7 @@ impl Default for ServerConfig {
             queue_enabled: false,
             queue_max_depth: default_queue_max_depth(),
             queue_timeout_ms: default_queue_timeout_ms(),
+            request_log_retention_days: 0,
         }
     }
 }
@@ -177,6 +184,14 @@ pub struct UpstreamConfig {
     /// Optional outbound proxy URL: http://..., https://..., socks5://...
     #[serde(default)]
     pub proxy: Option<String>,
+
+    /// Incoming model name to upstream model name mapping.
+    #[serde(default)]
+    pub model_map: BTreeMap<String, String>,
+
+    /// Minimum billing key level required to use this upstream. -1 disables the gate.
+    #[serde(default)]
+    pub min_key_level: i32,
 }
 
 impl Config {
@@ -239,6 +254,15 @@ impl Config {
             if u.format.is_none() {
                 u.format = Some(UpstreamFormat::detect(&u.base_url));
             }
+            let mut model_map = BTreeMap::new();
+            for (from, to) in std::mem::take(&mut u.model_map) {
+                let from = from.trim().to_string();
+                let to = to.trim().to_string();
+                if !from.is_empty() && !to.is_empty() {
+                    model_map.insert(from, to);
+                }
+            }
+            u.model_map = model_map;
         }
         Ok(())
     }
@@ -253,6 +277,9 @@ impl Config {
         for (i, u) in self.upstreams.iter().enumerate() {
             if u.id.trim().is_empty() {
                 anyhow::bail!("config: upstreams[{i}].id must not be empty");
+            }
+            if u.min_key_level < 0 && u.min_key_level != -1 {
+                anyhow::bail!("config: upstreams[{i}].min_key_level must be >= 0 or -1");
             }
             if !(u.base_url.starts_with("http://") || u.base_url.starts_with("https://")) {
                 anyhow::bail!(

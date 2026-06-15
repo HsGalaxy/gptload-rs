@@ -3,6 +3,9 @@ name: Rust Build
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,12 +20,20 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Optimized Binary
-        run: |
+      - name: Install OpenSSL dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
 
-          export RUSTFLAGS="-C target-cpu=native -C llvm-args=-inline-threshold=500"
-          
-          cargo build --release
+      - name: Check
+        run: cargo check --locked
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Build Optimized Binary
+        run: cargo build --release --locked
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4

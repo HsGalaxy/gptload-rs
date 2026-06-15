@@ -15,6 +15,7 @@ use hyper::{Body, Client, Method, Request, Response, Uri};
 use hyper_rustls::HttpsConnectorBuilder;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -136,6 +137,7 @@ pub struct Upstream {
 
     pub weight: usize,
     pub max_concurrent_per_key: u32,
+    pub min_key_level: i32,
     pub format: UpstreamFormat,
     pub proxy: Option<String>,
     pub client: UpstreamClient,
@@ -145,6 +147,7 @@ pub struct Upstream {
     pub keys_update_lock: Mutex<()>,
     pub key_rr: AtomicUsize,
     pub models: ArcSwap<AHashSet<String>>,
+    pub model_map: AHashMap<String, String>,
 
     pub stats: UpstreamStats,
 }
@@ -186,6 +189,11 @@ pub struct Stats {
 
     pub errors_timeout: AtomicU64,
     pub errors_network: AtomicU64,
+
+    pub prompt_tokens_total: AtomicU64,
+    pub completion_tokens_total: AtomicU64,
+    pub thought_tokens_total: AtomicU64,
+    pub tokens_total: AtomicU64,
 
     pub queue_depth: AtomicU64,
     pub queue_timeout_total: AtomicU64,
@@ -233,6 +241,10 @@ impl Stats {
             responses_5xx: AtomicU64::new(0),
             errors_timeout: AtomicU64::new(0),
             errors_network: AtomicU64::new(0),
+            prompt_tokens_total: AtomicU64::new(0),
+            completion_tokens_total: AtomicU64::new(0),
+            thought_tokens_total: AtomicU64::new(0),
+            tokens_total: AtomicU64::new(0),
             queue_depth: AtomicU64::new(0),
             queue_timeout_total: AtomicU64::new(0),
             latency_ns_total: AtomicU64::new(0),
@@ -242,7 +254,7 @@ impl Stats {
     }
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RequestLogEntry {
     pub id: u64,
     pub ts_ms: u64,
@@ -257,13 +269,17 @@ pub struct RequestLogEntry {
     pub resp_bytes: usize,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    pub thought_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub request_headers: Option<BTreeMap<String, String>>,
     pub request_body: Option<String>,
+    #[serde(default)]
     pub timing: RequestTiming,
+    #[serde(default)]
+    pub is_stream: Option<bool>,
 }
 
-#[derive(Clone, Default, serde::Serialize)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct RequestTiming {
     pub queue_ms: u64,
     pub upstream_ms: u64,
@@ -282,24 +298,30 @@ pub struct MetricsBucket {
 
 #[derive(Clone, Copy)]
 pub enum MetricsWindow {
-    Minute,
-    Hour,
+    OneMin,
+    FiveMin,
+    ThirtyMin,
+    OneHour,
     Day,
 }
 
 impl MetricsWindow {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "hour" => MetricsWindow::Hour,
+            "5min" | "5m" => MetricsWindow::FiveMin,
+            "30min" | "30m" => MetricsWindow::ThirtyMin,
+            "1h" | "hour" => MetricsWindow::OneHour,
             "day" => MetricsWindow::Day,
-            _ => MetricsWindow::Minute,
+            _ => MetricsWindow::OneMin,
         }
     }
 
     pub fn as_str(&self) -> &'static str {
         match self {
-            MetricsWindow::Minute => "minute",
-            MetricsWindow::Hour => "hour",
+            MetricsWindow::OneMin => "1min",
+            MetricsWindow::FiveMin => "5min",
+            MetricsWindow::ThirtyMin => "30min",
+            MetricsWindow::OneHour => "1h",
             MetricsWindow::Day => "day",
         }
     }
@@ -330,7 +352,16 @@ impl RequestsLog {
         if let Some(tx) = &self.tx {
             let _ = tx.try_send(entry.clone());
         }
+        self.push_entry(entry);
+    }
 
+    pub fn load_history<I: IntoIterator<Item = RequestLogEntry>>(&self, entries: I) {
+        for entry in entries {
+            self.push_entry(entry);
+        }
+    }
+
+    fn push_entry(&self, entry: RequestLogEntry) {
         {
             let mut entries = self.entries.lock().unwrap();
             entries.push_back(entry.clone());
@@ -361,16 +392,20 @@ impl RequestsLog {
 }
 
 pub struct RequestMetrics {
-    minute: VecDeque<MetricsBucket>,
-    hour: VecDeque<MetricsBucket>,
+    m1: VecDeque<MetricsBucket>,
+    m5: VecDeque<MetricsBucket>,
+    m30: VecDeque<MetricsBucket>,
+    h1: VecDeque<MetricsBucket>,
     day: VecDeque<MetricsBucket>,
 }
 
 impl RequestMetrics {
     pub fn new() -> Self {
         Self {
-            minute: VecDeque::new(),
-            hour: VecDeque::new(),
+            m1: VecDeque::new(),
+            m5: VecDeque::new(),
+            m30: VecDeque::new(),
+            h1: VecDeque::new(),
             day: VecDeque::new(),
         }
     }
@@ -379,20 +414,22 @@ impl RequestMetrics {
         let (success, failure, ignored) = classify_status(entry.status);
         let ts_ms = entry.ts_ms;
 
+        update_bucket(&mut self.m1, ts_ms, 60_000, 60, success, failure, ignored);
+        update_bucket(&mut self.m5, ts_ms, 300_000, 60, success, failure, ignored);
         update_bucket(
-            &mut self.minute,
+            &mut self.m30,
             ts_ms,
-            60_000,
-            60,
+            1_800_000,
+            48,
             success,
             failure,
             ignored,
         );
         update_bucket(
-            &mut self.hour,
+            &mut self.h1,
             ts_ms,
             3_600_000,
-            48,
+            24,
             success,
             failure,
             ignored,
@@ -410,8 +447,10 @@ impl RequestMetrics {
 
     pub fn snapshot(&self, window: MetricsWindow) -> Vec<MetricsBucket> {
         match window {
-            MetricsWindow::Minute => self.minute.iter().cloned().collect(),
-            MetricsWindow::Hour => self.hour.iter().cloned().collect(),
+            MetricsWindow::OneMin => self.m1.iter().cloned().collect(),
+            MetricsWindow::FiveMin => self.m5.iter().cloned().collect(),
+            MetricsWindow::ThirtyMin => self.m30.iter().cloned().collect(),
+            MetricsWindow::OneHour => self.h1.iter().cloned().collect(),
             MetricsWindow::Day => self.day.iter().cloned().collect(),
         }
     }
@@ -478,6 +517,11 @@ impl RuntimeConfig {
     }
 }
 
+#[inline]
+pub fn key_level_allows(billing_key_level: i32, min_key_level: i32) -> bool {
+    min_key_level < 0 || billing_key_level == -1 || billing_key_level >= min_key_level
+}
+
 impl RouterState {
     pub fn new(cfg: Config, config_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let runtime = Arc::new(RuntimeConfig::from_config(&cfg));
@@ -496,8 +540,28 @@ impl RouterState {
         let model_routes_path = data_dir.join("models_routes.json");
         let upstreams_path = data_dir.join("upstreams.json");
         let requests_log_path = data_dir.join("requests.jsonl");
+        if runtime.server.request_log_retention_days > 0 {
+            match cleanup_request_log_history(
+                &requests_log_path,
+                runtime.server.request_log_retention_days,
+            ) {
+                Ok((kept, removed)) if removed > 0 => {
+                    tracing::info!(kept, removed, "cleaned request log history");
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "request log history cleanup failed");
+                }
+            }
+        }
+        let history = load_request_log_history(&requests_log_path, 5000);
         let log_tx = start_request_log_writer(requests_log_path);
         let requests = Arc::new(RequestsLog::new(5000, log_tx));
+        if !history.is_empty() {
+            let count = history.len();
+            requests.load_history(history);
+            tracing::info!(count, "loaded request log history");
+        }
 
         let mut upstream_configs = cfg.upstreams.clone();
         if let Ok(list) = load_upstreams_override(&upstreams_path) {
@@ -684,7 +748,21 @@ impl RouterState {
 
     /// Select an upstream + key that supports the given model.
     /// Returns None only if no upstream has active keys for the model.
-    pub fn select_for_model(&self, model: &str, _now_ms: u64) -> Option<Selected> {
+    pub fn select_for_model(
+        &self,
+        model: &str,
+        billing_key_level: i32,
+        _now_ms: u64,
+    ) -> Option<Selected> {
+        self.select_for_model_excluding(model, billing_key_level, None)
+    }
+
+    pub fn select_for_model_excluding(
+        &self,
+        model: &str,
+        billing_key_level: i32,
+        exclude: Option<(&str, &str)>,
+    ) -> Option<Selected> {
         if self.is_shutting_down() {
             return None;
         }
@@ -701,7 +779,10 @@ impl RouterState {
             let u_idx = snap.schedule[rr % sched_len];
             let u = &snap.upstreams[u_idx];
 
-            if !u.models.load().contains(model) {
+            if !u.models.load().contains(model) && !u.model_map.contains_key(model) {
+                continue;
+            }
+            if !key_level_allows(billing_key_level, u.min_key_level) {
                 continue;
             }
 
@@ -712,7 +793,9 @@ impl RouterState {
                 global_max
             };
 
-            if let Some(k) = u.select_key(max) {
+            let excluded_key = exclude
+                .and_then(|(upstream_id, key)| (upstream_id == u.id.as_ref()).then_some(key));
+            if let Some(k) = u.select_key(max, excluded_key) {
                 self.stats
                     .upstream_selected_total
                     .fetch_add(1, Ordering::Relaxed);
@@ -731,7 +814,15 @@ impl RouterState {
         let snap = self.snapshot.load_full();
         snap.upstreams
             .iter()
-            .any(|u| u.models.load().contains(model))
+            .any(|u| u.models.load().contains(model) || u.model_map.contains_key(model))
+    }
+
+    pub fn model_allowed_for_level(&self, model: &str, billing_key_level: i32) -> bool {
+        let snap = self.snapshot.load_full();
+        snap.upstreams.iter().any(|u| {
+            (u.models.load().contains(model) || u.model_map.contains_key(model))
+                && key_level_allows(billing_key_level, u.min_key_level)
+        })
     }
 
     pub fn any_models_loaded(&self) -> bool {
@@ -787,16 +878,6 @@ impl RouterState {
             tracing::warn!(error = %e, "model routes persist failed");
         }
         Ok(count)
-    }
-
-    pub async fn fetch_models_preview(&self, upstream_id: &str) -> anyhow::Result<Vec<String>> {
-        let Some((_idx, upstream)) = self.upstream_by_id(upstream_id) else {
-            anyhow::bail!("unknown upstream id");
-        };
-        let models = self.fetch_models_for_upstream(upstream).await?;
-        let mut list: Vec<String> = models.into_iter().collect();
-        list.sort();
-        Ok(list)
     }
 
     async fn refresh_models_for_upstream(&self, upstream: Arc<Upstream>) -> anyhow::Result<usize> {
@@ -970,6 +1051,7 @@ impl RouterState {
                                 key.failure_count.store(0, Ordering::Relaxed);
                                 key.status.store(KEY_STATUS_ACTIVE, Ordering::Relaxed);
                                 upstream.rebuild_active_keys();
+                                state.queue_notify.notify_waiters();
                                 total_restored += 1;
                                 tracing::info!(
                                     key = %key.key,
@@ -1087,7 +1169,7 @@ impl Upstream {
     /// Select an active key via atomic round-robin, skipping keys at their
     /// concurrency limit and keys in 429 cooldown. Returns None if no active
     /// keys available.
-    fn select_key(&self, max_concurrent: u32) -> Option<Arc<KeyState>> {
+    fn select_key(&self, max_concurrent: u32, exclude_key: Option<&str>) -> Option<Arc<KeyState>> {
         let keys = self.active_keys.load_full();
         let n = keys.len();
         if n == 0 {
@@ -1098,6 +1180,9 @@ impl Upstream {
         for i in 0..n {
             let idx = (start + i) % n;
             let k = &keys[idx];
+            if exclude_key.is_some_and(|excluded| excluded == k.key.as_ref()) {
+                continue;
+            }
             // Skip keys in 429 cooldown.
             let until = k.cooldown_until_ms.load(Ordering::Relaxed);
             if until > 0 && now < until {
@@ -1268,6 +1353,11 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
     } else {
         base_path
     };
+    let model_map = u
+        .model_map
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
 
     let upstream = Upstream {
         id: Arc::<str>::from(u.id),
@@ -1277,6 +1367,7 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
         base_path: Arc::<str>::from(base_path),
         weight,
         max_concurrent_per_key: u.max_concurrent_per_key.unwrap_or(0),
+        min_key_level: u.min_key_level,
         format,
         proxy,
         client,
@@ -1285,6 +1376,7 @@ fn parse_upstream(u: UpstreamConfig, weight: usize) -> anyhow::Result<Arc<Upstre
         keys_update_lock: Mutex::new(()),
         key_rr: AtomicUsize::new(0),
         models: ArcSwap::from_pointee(AHashSet::new()),
+        model_map,
         stats: UpstreamStats::default(),
     };
 
@@ -1593,6 +1685,12 @@ impl RouterState {
                 },
                 format: Some(u.format),
                 proxy: u.proxy.clone(),
+                model_map: u
+                    .model_map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                min_key_level: u.min_key_level,
             })
             .collect()
     }
@@ -1779,7 +1877,11 @@ impl RouterState {
             .admin_write_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("admin write lock poisoned"))?;
-        self.replace_upstreams(cfg.upstreams)?;
+        let upstream_configs = match load_upstreams_override(&self.upstreams_path) {
+            Ok(list) => list,
+            Err(_) => cfg.upstreams,
+        };
+        self.replace_upstreams(upstream_configs)?;
         self.queue_notify.notify_waiters();
         Ok(())
     }
@@ -1878,6 +1980,9 @@ pub fn validate_keys(keys: &[String]) -> anyhow::Result<()> {
         if k.is_empty() {
             continue;
         }
+        if k.chars().any(char::is_whitespace) {
+            anyhow::bail!("key must not contain whitespace");
+        }
         valid_count += 1;
         hyper::header::HeaderValue::from_str(&format!("Bearer {}", k))
             .map_err(|_| anyhow::anyhow!("invalid key (cannot be used in HTTP header)"))?;
@@ -1944,6 +2049,93 @@ fn update_bucket(
     while buckets.len() > cap {
         buckets.pop_front();
     }
+}
+
+fn load_request_log_history(path: &Path, limit: usize) -> Vec<RequestLogEntry> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+    let reader = std::io::BufReader::new(file);
+    let mut entries = VecDeque::with_capacity(limit);
+    let mut invalid = 0usize;
+
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            invalid += 1;
+            continue;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<RequestLogEntry>(line) {
+            Ok(entry) => {
+                entries.push_back(entry);
+                while entries.len() > limit {
+                    entries.pop_front();
+                }
+            }
+            Err(_) => invalid += 1,
+        }
+    }
+
+    if invalid > 0 {
+        tracing::warn!(
+            path = %path.display(),
+            invalid,
+            "skipped invalid request log entries"
+        );
+    }
+
+    entries.into_iter().collect()
+}
+
+fn cleanup_request_log_history(
+    path: &Path,
+    retention_days: u64,
+) -> std::io::Result<(usize, usize)> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(e) => return Err(e),
+    };
+    let cutoff_ms = now_ms().saturating_sub(retention_days.saturating_mul(86_400_000));
+    let reader = std::io::BufReader::new(file);
+    let mut kept = 0usize;
+    let mut removed = 0usize;
+    let mut output = String::new();
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let remove = serde_json::from_str::<serde_json::Value>(trimmed)
+            .ok()
+            .and_then(|v| {
+                v.get("ts_ms")
+                    .and_then(|ts| ts.as_u64())
+                    .map(|ts| ts < cutoff_ms)
+            })
+            .unwrap_or(false);
+        if remove {
+            removed += 1;
+            continue;
+        }
+        output.push_str(trimmed);
+        output.push('\n');
+        kept += 1;
+    }
+
+    if removed > 0 {
+        let tmp_path = path.with_extension("jsonl.tmp");
+        std::fs::write(&tmp_path, output)?;
+        std::fs::rename(tmp_path, path)?;
+    }
+
+    Ok((kept, removed))
 }
 
 fn start_request_log_writer(path: PathBuf) -> Option<mpsc::Sender<RequestLogEntry>> {

@@ -1,13 +1,16 @@
+#![allow(clippy::result_large_err)]
+
 use crate::admin;
 use crate::billing::ReserveResult;
 use crate::config::UpstreamFormat;
 use crate::format::{self, AuthStyle};
 use crate::state::{
-    sanitize_hop_headers, RequestLogEntry, RouterState, Selected, HDR_AUTHORIZATION,
+    key_level_allows, sanitize_hop_headers, RequestLogEntry, RouterState, Selected,
+    HDR_AUTHORIZATION,
 };
 use crate::util::now_ms;
 use flate2::{Decompress, FlushDecompress, Status};
-use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, ORIGIN};
+use hyper::header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, HOST, ORIGIN};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
@@ -21,6 +24,74 @@ use std::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 
 static REQUEST_LOG_ID: AtomicU64 = AtomicU64::new(1);
+
+struct AccessLogContext {
+    method: hyper::Method,
+    path: String,
+    client_ip: String,
+    host: Option<String>,
+    forwarded_host: Option<String>,
+    forwarded_proto: Option<String>,
+}
+
+struct RequestLifecycle {
+    state: Arc<RouterState>,
+    start: Instant,
+    active: bool,
+}
+
+impl RequestLifecycle {
+    fn start(state: Arc<RouterState>) -> Self {
+        state.stats.requests_total.fetch_add(1, Ordering::Relaxed);
+        state
+            .stats
+            .requests_inflight
+            .fetch_add(1, Ordering::Relaxed);
+        Self {
+            state,
+            start: Instant::now(),
+            active: true,
+        }
+    }
+
+    fn finish(&mut self) {
+        if !self.active {
+            return;
+        }
+        let dur = self.start.elapsed();
+        self.state.record_latency(dur.as_nanos() as u64);
+        self.state
+            .stats
+            .requests_inflight
+            .fetch_sub(1, Ordering::Relaxed);
+        self.active = false;
+    }
+}
+
+impl Drop for RequestLifecycle {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+struct KeyRequestGuard {
+    state: Arc<RouterState>,
+    key: Arc<crate::state::KeyState>,
+}
+
+impl KeyRequestGuard {
+    fn new(state: Arc<RouterState>, key: Arc<crate::state::KeyState>) -> Self {
+        key.active_requests.fetch_add(1, Ordering::Relaxed);
+        Self { state, key }
+    }
+}
+
+impl Drop for KeyRequestGuard {
+    fn drop(&mut self) {
+        self.key.active_requests.fetch_sub(1, Ordering::Relaxed);
+        self.state.notify_capacity();
+    }
+}
 
 pub async fn serve_http<F>(
     addr: SocketAddr,
@@ -55,13 +126,17 @@ async fn handle(
     state: Arc<RouterState>,
     client_addr: SocketAddr,
 ) -> Response<Body> {
+    let access_log = AccessLogContext::from_request(&req, client_addr);
+    let access_start = Instant::now();
     let origin = req.headers().get(ORIGIN).cloned();
-    if req.method() == hyper::Method::OPTIONS && origin.is_some() {
-        return cors_preflight(&state, origin.as_ref());
-    }
-
-    let resp = handle_inner(req, state.clone(), client_addr).await;
-    add_cors_headers(resp, &state, origin.as_ref())
+    let resp = if req.method() == hyper::Method::OPTIONS && origin.is_some() {
+        cors_preflight(&state, origin.as_ref())
+    } else {
+        let resp = handle_inner(req, state.clone(), client_addr).await;
+        add_cors_headers(resp, &state, origin.as_ref())
+    };
+    access_log.emit(resp.status(), access_start.elapsed());
+    resp
 }
 
 async fn handle_inner(
@@ -70,6 +145,14 @@ async fn handle_inner(
     client_addr: SocketAddr,
 ) -> Response<Body> {
     let path = req.uri().path().to_string();
+
+    if (req.method() == hyper::Method::GET || req.method() == hyper::Method::HEAD) && path == "/" {
+        return Response::builder()
+            .status(http::StatusCode::FOUND)
+            .header(http::header::LOCATION, "/admin/")
+            .body(Body::empty())
+            .unwrap();
+    }
 
     // Health check.
     if req.method() == hyper::Method::GET && path == "/health" {
@@ -101,7 +184,7 @@ async fn handle_inner(
     }
 
     // Admin UI/API.
-    if path.starts_with("/admin") {
+    if is_admin_path(&path) {
         return admin::handle_admin(req, state).await;
     }
 
@@ -166,7 +249,7 @@ async fn handle_inner(
         }
     };
 
-    if balance <= 0 {
+    if balance <= 0 && balance != crate::billing::UNLIMITED_BALANCE {
         return logged_json_error(
             &state,
             &base_log_ctx,
@@ -175,17 +258,11 @@ async fn handle_inner(
             "balance_insufficient",
         );
     }
+    let billing_key_level = state.store.get_key_level(&billing_key);
 
-    // Stats: request start.
-    state
-        .stats
-        .requests_total
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    state
-        .stats
-        .requests_inflight
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let t0 = Instant::now();
+    // Stats: request start. The guard is moved into proxied response streams
+    // so streaming requests stay inflight until the body finishes or is dropped.
+    let lifecycle = RequestLifecycle::start(state.clone());
 
     let resp =
         if req.method() == hyper::Method::GET && (path == "/v1/models" || path == "/v1/models/") {
@@ -202,24 +279,76 @@ async fn handle_inner(
             forward(
                 req,
                 state.clone(),
+                lifecycle,
                 start,
                 client_ip,
                 method,
                 path,
                 billing_key,
+                billing_key_level,
             )
             .await
         };
 
-    // Stats: latency + inflight.
-    let dur = t0.elapsed();
-    state.record_latency(dur.as_nanos() as u64);
-    state
-        .stats
-        .requests_inflight
-        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-
     resp
+}
+
+fn is_admin_path(path: &str) -> bool {
+    path == "/admin" || path.starts_with("/admin/")
+}
+
+impl AccessLogContext {
+    fn from_request(req: &Request<Body>, client_addr: SocketAddr) -> Self {
+        let headers = req.headers();
+        Self {
+            method: req.method().clone(),
+            path: req.uri().path().to_string(),
+            client_ip: client_addr.ip().to_string(),
+            host: header_value(headers.get(HOST)),
+            forwarded_host: header_value(headers.get("x-forwarded-host")),
+            forwarded_proto: header_value(headers.get("x-forwarded-proto")),
+        }
+    }
+
+    fn emit(&self, status: http::StatusCode, elapsed: std::time::Duration) {
+        let elapsed_ms = elapsed.as_millis() as u64;
+        if is_access_log_info_path(&self.path, status) {
+            tracing::info!(
+                method = %self.method,
+                path = %self.path,
+                status = status.as_u16(),
+                elapsed_ms,
+                client_ip = %self.client_ip,
+                host = self.host.as_deref().unwrap_or("-"),
+                forwarded_host = self.forwarded_host.as_deref().unwrap_or("-"),
+                forwarded_proto = self.forwarded_proto.as_deref().unwrap_or("-"),
+                "access"
+            );
+        } else {
+            tracing::debug!(
+                method = %self.method,
+                path = %self.path,
+                status = status.as_u16(),
+                elapsed_ms,
+                client_ip = %self.client_ip,
+                host = self.host.as_deref().unwrap_or("-"),
+                forwarded_host = self.forwarded_host.as_deref().unwrap_or("-"),
+                forwarded_proto = self.forwarded_proto.as_deref().unwrap_or("-"),
+                "access"
+            );
+        }
+    }
+}
+
+fn is_access_log_info_path(path: &str, status: http::StatusCode) -> bool {
+    is_admin_path(path) || path == "/health" || path == "/metrics" || status.is_client_error()
+}
+
+fn header_value(value: Option<&http::HeaderValue>) -> Option<String> {
+    value
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 enum AttemptResult {
@@ -229,6 +358,7 @@ enum AttemptResult {
     Retry(Selected),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_attempt(
     state: &Arc<RouterState>,
     sel: &Selected,
@@ -241,19 +371,32 @@ async fn execute_attempt(
     injected: bool,
     billing_reserved: &mut bool,
     billing_key: &str,
+    billing_key_level: i32,
     log_ctx: &RequestLogContext,
     stream_request: bool,
+    lifecycle: &mut Option<RequestLifecycle>,
 ) -> AttemptResult {
     let now = now_ms();
     let attempt_start = Instant::now();
 
     let model = log_ctx.model.as_deref().unwrap_or_default();
+    let upstream_model = upstream
+        .model_map
+        .get(model)
+        .map(String::as_str)
+        .unwrap_or(model);
+    let mapped_body = if upstream_model != model {
+        rewrite_request_model(body_bytes, upstream_model)
+    } else {
+        None
+    };
+    let body_for_attempt = mapped_body.as_ref().unwrap_or(body_bytes);
     let adapted = match format::adapt_request(
         upstream.format,
         original_pq,
         out_method,
-        body_bytes,
-        model,
+        body_for_attempt,
+        upstream_model,
         sel.key.key.as_ref(),
     ) {
         Ok(adapted) => adapted,
@@ -341,10 +484,11 @@ async fn execute_attempt(
             let should_retry = should_retry_status(state, status);
 
             if should_retry {
-                let now = now_ms();
-                if let Some(new_sel) =
-                    state.select_for_model(&log_ctx.model.clone().unwrap_or_default(), now)
-                {
+                if let Some(new_sel) = state.select_for_model_excluding(
+                    log_ctx.model.as_deref().unwrap_or_default(),
+                    billing_key_level,
+                    Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
+                ) {
                     drop(up_resp);
                     tracing::debug!(
                         status = %status,
@@ -370,6 +514,7 @@ async fn execute_attempt(
                 log_ctx.clone(),
                 stream_request,
                 Some(billing_key.to_string()),
+                lifecycle.take(),
             ))
         }
         Ok(Err(_e)) => {
@@ -377,9 +522,11 @@ async fn execute_attempt(
                 .record_latency_ms(attempt_start.elapsed().as_millis() as u64);
             state.on_network_error(sel, now);
 
-            if let Some(new_sel) =
-                state.select_for_model(&log_ctx.model.clone().unwrap_or_default(), now)
-            {
+            if let Some(new_sel) = state.select_for_model_excluding(
+                log_ctx.model.as_deref().unwrap_or_default(),
+                billing_key_level,
+                Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
+            ) {
                 tracing::debug!(
                     old_upstream = %sel.upstream.id,
                     new_upstream = %new_sel.upstream.id,
@@ -406,9 +553,11 @@ async fn execute_attempt(
                 .record_latency_ms(attempt_start.elapsed().as_millis() as u64);
             state.on_timeout(sel, now);
 
-            if let Some(new_sel) =
-                state.select_for_model(&log_ctx.model.clone().unwrap_or_default(), now)
-            {
+            if let Some(new_sel) = state.select_for_model_excluding(
+                log_ctx.model.as_deref().unwrap_or_default(),
+                billing_key_level,
+                Some((sel.upstream.id.as_ref(), sel.key.key.as_ref())),
+            ) {
                 tracing::debug!(
                     old_upstream = %sel.upstream.id,
                     new_upstream = %new_sel.upstream.id,
@@ -433,16 +582,20 @@ async fn execute_attempt(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn forward(
     req: Request<Body>,
     state: Arc<RouterState>,
+    lifecycle: RequestLifecycle,
     start: Instant,
     client_ip: String,
     method: hyper::Method,
     path: String,
     billing_key: String,
+    billing_key_level: i32,
 ) -> Response<Body> {
     const MAX_REQUEST_BODY_BYTES: usize = 16 * 1024 * 1024;
+    let mut lifecycle = Some(lifecycle);
 
     let (parts, body) = req.into_parts();
 
@@ -475,7 +628,21 @@ async fn forward(
         match chunk_result {
             Ok(chunk) => {
                 if body_bytes.len().saturating_add(chunk.len()) > MAX_REQUEST_BODY_BYTES {
-                    return RouterState::json_error(
+                    let ctx = RequestLogContext::new(
+                        start,
+                        client_ip.clone(),
+                        method.to_string(),
+                        path.clone(),
+                        None,
+                        None,
+                        body_bytes.len(),
+                        request_headers.clone(),
+                        None,
+                        0,
+                    );
+                    return logged_json_error(
+                        &state,
+                        &ctx,
                         http::StatusCode::PAYLOAD_TOO_LARGE,
                         "request body too large",
                         "body_too_large",
@@ -484,7 +651,21 @@ async fn forward(
                 body_bytes.extend_from_slice(&chunk);
             }
             Err(_) => {
-                return RouterState::json_error(
+                let ctx = RequestLogContext::new(
+                    start,
+                    client_ip.clone(),
+                    method.to_string(),
+                    path.clone(),
+                    None,
+                    None,
+                    body_bytes.len(),
+                    request_headers.clone(),
+                    None,
+                    0,
+                );
+                return logged_json_error(
+                    &state,
+                    &ctx,
                     http::StatusCode::BAD_GATEWAY,
                     "failed to read request body",
                     "body_read_error",
@@ -527,6 +708,7 @@ async fn forward(
         request_body,
         0,
     );
+    log_ctx.is_stream = Some(stream_request);
 
     let Some(model) = model else {
         return logged_json_error(
@@ -548,10 +730,18 @@ async fn forward(
             "model not found",
             "model_not_found",
         );
-    } else if let Some(sel) = state.select_for_model(&model, now) {
+    } else if !state.model_allowed_for_level(&model, billing_key_level) {
+        return logged_json_error(
+            &state,
+            &log_ctx,
+            http::StatusCode::FORBIDDEN,
+            "billing key level insufficient for model",
+            "model_forbidden",
+        );
+    } else if let Some(sel) = state.select_for_model(&model, billing_key_level, now) {
         sel
     } else {
-        match wait_for_selection(&state, &model).await {
+        match wait_for_selection(&state, &model, billing_key_level).await {
             Ok((sel, waited)) => {
                 queue_wait_ms = waited;
                 sel
@@ -587,10 +777,7 @@ async fn forward(
         log_ctx.upstream_id = Some(sel.upstream.id.to_string());
         let upstream = &sel.upstream;
 
-        // Track per-key concurrency for this attempt.
-        sel.key
-            .active_requests
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key_guard = KeyRequestGuard::new(state.clone(), sel.key.clone());
 
         let result = execute_attempt(
             &state,
@@ -604,23 +791,25 @@ async fn forward(
             injected,
             &mut billing_reserved,
             &billing_key,
+            billing_key_level,
             &log_ctx,
             stream_request,
+            &mut lifecycle,
         )
         .await;
-
-        // Decrement per-key concurrency after each attempt.
-        sel.key
-            .active_requests
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        state.notify_capacity();
+        drop(key_guard);
 
         match result {
             AttemptResult::Success(resp) => return resp,
             AttemptResult::Retry(new_sel) => {
                 retry_count += 1;
                 if retry_count > max_retries {
-                    return RouterState::json_error(
+                    if billing_reserved {
+                        let _ = state.billing.release_reservation(&billing_key);
+                    }
+                    return logged_json_error(
+                        &state,
+                        &log_ctx,
                         http::StatusCode::BAD_GATEWAY,
                         "max retries exceeded",
                         "max_retries",
@@ -636,6 +825,7 @@ async fn forward(
 async fn wait_for_selection(
     state: &Arc<RouterState>,
     model: &str,
+    billing_key_level: i32,
 ) -> Result<(Selected, u64), Response<Body>> {
     let server = state.server_config();
     if !server.queue_enabled {
@@ -662,21 +852,61 @@ async fn wait_for_selection(
                 "shutting_down",
             ));
         }
-        if let Some(sel) = state.select_for_model(model, now_ms()) {
+        if let Some(sel) = state.select_for_model(model, billing_key_level, now_ms()) {
             return Ok((sel, start.elapsed().as_millis() as u64));
         }
-        tokio::select! {
-            _ = &mut timeout => {
-                state.stats.queue_timeout_total.fetch_add(1, Ordering::Relaxed);
-                return Err(queue_rejected_response(server.queue_timeout_ms));
+
+        if let Some(delay) = next_cooldown_delay(state, model, billing_key_level) {
+            let cooldown = tokio::time::sleep(delay);
+            tokio::pin!(cooldown);
+            tokio::select! {
+                _ = &mut timeout => {
+                    state.stats.queue_timeout_total.fetch_add(1, Ordering::Relaxed);
+                    return Err(queue_rejected_response(server.queue_timeout_ms));
+                }
+                _ = state.queue_notify.notified() => {}
+                _ = &mut cooldown => {}
             }
-            _ = state.queue_notify.notified() => {}
+        } else {
+            tokio::select! {
+                _ = &mut timeout => {
+                    state.stats.queue_timeout_total.fetch_add(1, Ordering::Relaxed);
+                    return Err(queue_rejected_response(server.queue_timeout_ms));
+                }
+                _ = state.queue_notify.notified() => {}
+            }
         }
     }
 }
 
+fn next_cooldown_delay(
+    state: &RouterState,
+    model: &str,
+    billing_key_level: i32,
+) -> Option<std::time::Duration> {
+    let now = now_ms();
+    let snap = state.snapshot.load_full();
+    let mut next_until: Option<u64> = None;
+    for upstream in snap.upstreams.iter() {
+        if !upstream.models.load().contains(model) && !upstream.model_map.contains_key(model) {
+            continue;
+        }
+        if !key_level_allows(billing_key_level, upstream.min_key_level) {
+            continue;
+        }
+        let keys = upstream.active_keys.load_full();
+        for key in keys.iter() {
+            let until = key.cooldown_until_ms.load(Ordering::Relaxed);
+            if until > now {
+                next_until = Some(next_until.map_or(until, |cur| cur.min(until)));
+            }
+        }
+    }
+    next_until.map(|until| std::time::Duration::from_millis(until.saturating_sub(now).max(1)))
+}
+
 fn queue_rejected_response(queue_timeout_ms: u64) -> Response<Body> {
-    let retry_after_secs = ((queue_timeout_ms.max(1000) + 999) / 1000).max(1);
+    let retry_after_secs = queue_timeout_ms.max(1000).div_ceil(1000).max(1);
     let mut resp = RouterState::json_error(
         http::StatusCode::TOO_MANY_REQUESTS,
         "request queue full or timed out",
@@ -755,9 +985,11 @@ struct RequestLogContext {
     request_headers: Option<std::collections::BTreeMap<String, String>>,
     request_body: Option<String>,
     queue_ms: u64,
+    is_stream: Option<bool>,
 }
 
 impl RequestLogContext {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         start: Instant,
         client_ip: String,
@@ -781,6 +1013,7 @@ impl RequestLogContext {
             request_headers,
             request_body,
             queue_ms,
+            is_stream: None,
         }
     }
 }
@@ -789,6 +1022,7 @@ impl RequestLogContext {
 struct UsageTokens {
     prompt: u64,
     completion: u64,
+    thought: u64,
     total: u64,
 }
 
@@ -799,6 +1033,10 @@ fn record_request(
     resp_bytes: usize,
     usage: Option<UsageTokens>,
 ) {
+    if !ctx.path.starts_with("/v1") {
+        return;
+    }
+
     let total_ms = ctx.start.elapsed().as_millis() as u64;
     let entry = RequestLogEntry {
         id: REQUEST_LOG_ID.fetch_add(1, Ordering::Relaxed),
@@ -814,6 +1052,7 @@ fn record_request(
         resp_bytes,
         prompt_tokens: usage.map(|u| u.prompt),
         completion_tokens: usage.map(|u| u.completion),
+        thought_tokens: usage.map(|u| u.thought),
         total_tokens: usage.map(|u| u.total),
         request_headers: ctx.request_headers.clone(),
         request_body: ctx.request_body.clone(),
@@ -823,7 +1062,26 @@ fn record_request(
             total_ms,
             attempts: 0,
         },
+        is_stream: ctx.is_stream,
     };
+    if let Some(usage) = usage {
+        state
+            .stats
+            .prompt_tokens_total
+            .fetch_add(usage.prompt, Ordering::Relaxed);
+        state
+            .stats
+            .completion_tokens_total
+            .fetch_add(usage.completion, Ordering::Relaxed);
+        state
+            .stats
+            .thought_tokens_total
+            .fetch_add(usage.thought, Ordering::Relaxed);
+        state
+            .stats
+            .tokens_total
+            .fetch_add(usage.total, Ordering::Relaxed);
+    }
     state.record_request(entry);
 }
 
@@ -847,6 +1105,7 @@ fn logged_response(
     resp
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_upstream_request(
     method: hyper::Method,
     uri: http::Uri,
@@ -922,6 +1181,7 @@ fn proxy_upstream_response(
     log_ctx: RequestLogContext,
     stream_request: bool,
     billing_key: Option<String>,
+    lifecycle: Option<RequestLifecycle>,
 ) -> Response<Body> {
     let (mut parts, body) = up_resp.into_parts();
     sanitize_hop_headers(&mut parts.headers);
@@ -952,6 +1212,7 @@ fn proxy_upstream_response(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, io::Error>>(32);
     tokio::spawn(async move {
+        let _lifecycle = lifecycle;
         use hyper::body::HttpBody;
         const MAX_PARSE_BYTES: usize = 32 * 1024 * 1024;
         const MAX_SSE_BUF_BYTES: usize = 2 * 1024 * 1024;
@@ -1101,7 +1362,11 @@ fn extract_api_key(headers: &hyper::HeaderMap) -> Option<String> {
 fn models_list(state: &RouterState) -> (Response<Body>, usize) {
     let routes = state.get_model_routes();
     let mut models: Vec<String> = routes.models.keys().cloned().collect();
+    for upstream in state.snapshot.load_full().upstreams.iter() {
+        models.extend(upstream.model_map.keys().cloned());
+    }
     models.sort();
+    models.dedup();
 
     let data: Vec<serde_json::Value> = models
         .iter()
@@ -1145,6 +1410,16 @@ fn parse_request_json(
     serde_json::from_slice(body).ok()
 }
 
+fn rewrite_request_model(body: &bytes::Bytes, model: &str) -> Option<bytes::Bytes> {
+    let mut value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object_mut()?;
+    if !object.contains_key("model") {
+        return None;
+    }
+    object.insert("model".to_string(), serde_json::json!(model));
+    serde_json::to_vec(&value).ok().map(bytes::Bytes::from)
+}
+
 fn ensure_stream_usage(v: &mut serde_json::Value) -> bool {
     let obj = match v.as_object_mut() {
         Some(obj) => obj,
@@ -1182,6 +1457,15 @@ fn extract_usage_from_value(v: &serde_json::Value) -> Option<UsageTokens> {
     let usage = v.get("usage")?;
     let prompt = usage.get("prompt_tokens").and_then(|v| v.as_u64());
     let completion = usage.get("completion_tokens").and_then(|v| v.as_u64());
+    let thought = usage
+        .get("thought_tokens")
+        .and_then(|v| v.as_u64())
+        .or_else(|| {
+            usage
+                .get("completion_tokens_details")
+                .and_then(|v| v.get("reasoning_tokens"))
+                .and_then(|v| v.as_u64())
+        });
     let total = usage
         .get("total_tokens")
         .and_then(|v| v.as_u64())
@@ -1190,13 +1474,14 @@ fn extract_usage_from_value(v: &serde_json::Value) -> Option<UsageTokens> {
             _ => None,
         });
 
-    if prompt.is_none() && completion.is_none() && total.is_none() {
+    if prompt.is_none() && completion.is_none() && thought.is_none() && total.is_none() {
         return None;
     }
 
     Some(UsageTokens {
         prompt: prompt.unwrap_or(0),
         completion: completion.unwrap_or(0),
+        thought: thought.unwrap_or(0),
         total: total.unwrap_or(0),
     })
 }
@@ -1284,5 +1569,58 @@ mod tests {
     fn retry_after_past_date_is_zero() {
         let value = HeaderValue::from_static("Wed, 21 Oct 2015 07:28:00 GMT");
         assert_eq!(parse_retry_after_ms(Some(&value)), Some(0));
+    }
+
+    #[test]
+    fn usage_parser_reads_thought_tokens() {
+        let value = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 7,
+                "thought_tokens": 3,
+                "total_tokens": 17
+            }
+        });
+
+        let usage = extract_usage_from_value(&value).unwrap();
+
+        assert_eq!(usage.prompt, 10);
+        assert_eq!(usage.completion, 7);
+        assert_eq!(usage.thought, 3);
+        assert_eq!(usage.total, 17);
+    }
+
+    #[test]
+    fn usage_parser_reads_reasoning_tokens_details() {
+        let value = serde_json::json!({
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 7,
+                "total_tokens": 17,
+                "completion_tokens_details": {
+                    "reasoning_tokens": 3
+                }
+            }
+        });
+
+        let usage = extract_usage_from_value(&value).unwrap();
+
+        assert_eq!(usage.prompt, 10);
+        assert_eq!(usage.completion, 7);
+        assert_eq!(usage.thought, 3);
+        assert_eq!(usage.total, 17);
+    }
+
+    #[test]
+    fn rewrite_request_model_updates_top_level_model() {
+        let body = bytes::Bytes::from_static(
+            br#"{"model":"public-model","messages":[{"role":"user","content":"hi"}]}"#,
+        );
+
+        let rewritten = rewrite_request_model(&body, "upstream-model").unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&rewritten).unwrap();
+
+        assert_eq!(value["model"], "upstream-model");
+        assert_eq!(value["messages"][0]["content"], "hi");
     }
 }

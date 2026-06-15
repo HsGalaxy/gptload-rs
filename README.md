@@ -52,6 +52,8 @@ max_concurrent_per_key = 20  # 该渠道限流宽松
 2. 成功后：`settle_reserved_usage()` 按实际 token 结算
 3. 失败时：`release_reservation()` 归还预留
 
+余额为 `-1` 的计费 key 表示无限额，不会预扣或结算扣减。
+
 ---
 
 ## 快速开始

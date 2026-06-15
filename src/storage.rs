@@ -34,6 +34,48 @@ impl KeyStore {
         Ok(self.db.open_tree("billing")?)
     }
 
+    pub fn open_key_levels_tree(&self) -> anyhow::Result<sled::Tree> {
+        Ok(self.db.open_tree("key_levels")?)
+    }
+
+    pub fn get_key_level(&self, key: &str) -> i32 {
+        let tree = match self.open_key_levels_tree() {
+            Ok(tree) => tree,
+            Err(e) => {
+                tracing::warn!(error = %e, "key level store open failed");
+                return 0;
+            }
+        };
+        tree.get(key.as_bytes())
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                if v.len() == 4 {
+                    let mut bytes = [0u8; 4];
+                    bytes.copy_from_slice(&v);
+                    Some(i32::from_le_bytes(bytes))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0)
+    }
+
+    pub fn set_key_level(&self, key: &str, level: i32) -> anyhow::Result<()> {
+        validate_key_level(level)?;
+        let tree = self.open_key_levels_tree()?;
+        tree.insert(key.as_bytes(), &level.to_le_bytes())?;
+        tree.flush()?;
+        Ok(())
+    }
+
+    pub fn delete_key_level(&self, key: &str) -> anyhow::Result<()> {
+        let tree = self.open_key_levels_tree()?;
+        tree.remove(key.as_bytes())?;
+        tree.flush()?;
+        Ok(())
+    }
+
     pub fn count_keys(&self, upstream_id: &str) -> anyhow::Result<usize> {
         let t = self.open_upstream_tree(upstream_id)?;
         Ok(t.len())
@@ -158,4 +200,11 @@ impl KeyStore {
         self.db.flush()?;
         Ok(())
     }
+}
+
+pub fn validate_key_level(level: i32) -> anyhow::Result<()> {
+    if level < 0 && level != -1 {
+        anyhow::bail!("key level must be >= 0 or -1");
+    }
+    Ok(())
 }

@@ -1,12 +1,13 @@
 [package]
 name = "gptload-rs"
-version = "0.3.0"
+version = "0.3.1-Ando"
 edition = "2021"
 license = "MIT"
 description = "High-performance OpenAI-format transparent proxy with multi-upstream + multi-key load balancing, admin API/UI, hot key reload, and realtime stats."
 
 [features]
 mimalloc = ["dep:mimalloc"]
+vendored-openssl = ["dep:openssl"]
 
 [dependencies]
 anyhow = "1"
@@ -33,6 +34,7 @@ hyper-proxy = "0.9.1"
 tokio-socks = "0.5.3"
 base64 = "0.22"
 percent-encoding = "2"
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
 
 # 优化编译配置
 [profile.release]
